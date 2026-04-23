@@ -1095,7 +1095,7 @@ function ShippingWidget({ companies, onGo }) {
       var o = tracked[i];
       var carrier = o.carrier ? o.carrier.toLowerCase().replace(/\s/g,"_") : detectCarrier(o.trackingNo);
       try {
-        var resp = await fetch("/.netlify/functions/shippo", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carrier:carrier,trackingNo:o.trackingNo})});
+        var resp = await fetch("/.netlify/functions/shippo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carrier:carrier,trackingNo:o.trackingNo})});
         if(resp.ok){ var d = await resp.json(); results[o.id] = d; }
       } catch(e) {}
     }
@@ -1199,10 +1199,9 @@ function ShippingWidget({ companies, onGo }) {
 
                 {/* Actions */}
                 <div style={{flex:"0 0 auto",display:"flex",flexDirection:"column",gap:6}}>
-                  {o.trackingNo&&<button onClick={e=>{e.stopPropagation();fetchTrack(o);}}
-                     style={{display:"block",width:"100%",background:"#2C3E6B",color:"white",borderRadius:8,padding:"7px 14px",fontWeight:600,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",textAlign:"center"}}>
+                  <button onClick={e=>{e.stopPropagation();fetchTrack(o);}} style={{display:"block",width:"100%",background:"#2C3E6B",color:"white",borderRadius:8,padding:"7px 14px",fontWeight:600,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",textAlign:"center"}}>
                     Track →
-                  </button>}
+                  </button>
                   <button onClick={function(){onGo("orders");}}
                     style={{background:"#F1F5F9",border:"none",borderRadius:8,padding:"7px 14px",color:"#374151",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em"}}>
                     Order
@@ -1697,12 +1696,8 @@ function Orders({ companies, allCategories, onUpdate, initialFilter, onClearFilt
     setTrackLoading(true);
     try {
       const carrier = (order.carrier||"usps").toLowerCase().replace(/\s/g,"_");
-      const resp = await fetch("/.netlify/functions/shippo", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({carrier:carrier, trackingNo:order.trackingNo})
-      });
-      if(resp.ok){ const d = await resp.json(); setTrackData(d); }
+      const resp = await fetch("/.netlify/functions/shippo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carrier:carrier,trackingNo:order.trackingNo})});
+      if(resp.ok){ const d=await resp.json(); setTrackData(d); }
     } catch(e){}
     setTrackLoading(false);
   };
@@ -1946,12 +1941,7 @@ function Orders({ companies, allCategories, onUpdate, initialFilter, onClearFilt
                   </div>
                 );
               })()}
-              {!trackLoading&&!trackData&&(
-                <div style={{textAlign:"center",padding:"20px 0"}}>
-                  <div style={{color:"#111827",fontWeight:700,marginBottom:6}}>Could not load tracking data</div>
-                  <div style={{fontSize:"0.82em",color:"#374151"}}>Check carrier website directly</div>
-                </div>
-              )}
+              {!trackLoading&&!trackData&&<div style={{textAlign:"center",padding:"20px 0",color:"#111827",fontWeight:700}}>No tracking data available</div>}
             </div>
           </div>
         </div>
@@ -2712,7 +2702,7 @@ function TrackingPage({ companies, onGo }) {
                 </div>
                 <span style={{background:"#DBEAFE",color:"#1E40AF",fontWeight:600,padding:"3px 9px",borderRadius:99,fontSize:"0.82em"}}>Shipped</span>
                 <span style={{fontSize:"0.8em",color:"#374151"}}>No carrier ETA yet</span>
-                <a href={"https://parcelsapp.com/en/tracking/"+o.trackingNo} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",textDecoration:"none"}}>Track →</a>
+                <button onClick={e=>{e.stopPropagation();fetchTrack(o);}} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em"}}>Track →</button>
               </div>
             ))}
           </div>
@@ -2767,7 +2757,7 @@ function TrackingPage({ companies, onGo }) {
                   <div style={{textAlign:"right",minWidth:80}}>
                     {o.eta?<div style={{color:isOverdueOrder?"#DC2626":"#374151",fontWeight:isOverdueOrder?700:400,fontSize:"0.85em"}}>ETA: {shortDate(o.eta)}{isOverdueOrder?" ⚠":""}</div>:<div style={{color:"#9CA3AF",fontSize:"0.85em"}}>No ETA</div>}
                   </div>
-                  <a href={"https://parcelsapp.com/en/tracking/"+o.trackingNo} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",textDecoration:"none",whiteSpace:"nowrap"}}>Track →</a>
+                  <button onClick={e=>{e.stopPropagation();fetchTrack(o);}} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",whiteSpace:"nowrap"}}>Track →</button>
                 </div>
               );
             })}
