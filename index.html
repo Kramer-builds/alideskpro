@@ -1095,7 +1095,7 @@ function ShippingWidget({ companies, onGo }) {
       var o = tracked[i];
       var carrier = o.carrier ? o.carrier.toLowerCase().replace(/\s/g,"_") : detectCarrier(o.trackingNo);
       try {
-        var resp = await fetch("/.netlify/functions/shippo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carrier:carrier,trackingNo:o.trackingNo})});
+        var resp = await fetch("https://api.goshippo.com/tracks/"+carrier+"/"+o.trackingNo, {headers:{"Authorization":"ShippoToken "+SHIPPO_KEY}});
         if(resp.ok){ var d = await resp.json(); results[o.id] = d; }
       } catch(e) {}
     }
@@ -1199,7 +1199,7 @@ function ShippingWidget({ companies, onGo }) {
 
                 {/* Actions */}
                 <div style={{flex:"0 0 auto",display:"flex",flexDirection:"column",gap:6}}>
-                  <button onClick={e=>{e.stopPropagation();fetchTrack(o);}} style={{display:"block",width:"100%",background:"#2C3E6B",color:"white",borderRadius:8,padding:"7px 14px",fontWeight:600,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",textAlign:"center"}}>
+                  <button onClick={e=>{e.stopPropagation();const tn=o.trackingNo,c=(o.carrier||"").toLowerCase();let u=c.includes("ups")||/^1Z/i.test(tn)?"https://www.ups.com/track?tracknum="+tn:c.includes("fedex")?"https://www.fedex.com/fedextrack/?trknbr="+tn:c.includes("usps")?"https://tools.usps.com/go/TrackConfirmAction?tLabels="+tn:c.includes("dhl")?"https://www.dhl.com/en/express/tracking.html?AWB="+tn:c.includes("yun")?"https://www.yuntrack.com/track?number="+tn:"https://parcelsapp.com/en/tracking/"+tn;window.open(u,"_blank");}} style={{display:"block",width:"100%",background:"#2C3E6B",color:"white",borderRadius:8,padding:"7px 14px",fontWeight:600,border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em"}}>
                     Track →
                   </button>
                   <button onClick={function(){onGo("orders");}}
@@ -1686,21 +1686,6 @@ function Orders({ companies, allCategories, onUpdate, initialFilter, onClearFilt
   const [expandedOrder,setExpandedOrder]=useState(null);
   const [editStatusOrder,setEditStatusOrder]=useState(null);
   const [editOrder,setEditOrder]=useState(null);
-  const [trackPopup,setTrackPopup]=useState(null);
-  const [trackData,setTrackData]=useState(null);
-  const [trackLoading,setTrackLoading]=useState(false);
-
-  const fetchTrack = async (order) => {
-    setTrackPopup(order);
-    setTrackData(null);
-    setTrackLoading(true);
-    try {
-      const carrier = (order.carrier||"usps").toLowerCase().replace(/\s/g,"_");
-      const resp = await fetch("/.netlify/functions/shippo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carrier:carrier,trackingNo:order.trackingNo})});
-      if(resp.ok){ const d=await resp.json(); setTrackData(d); }
-    } catch(e){}
-    setTrackLoading(false);
-  };
 
   const activeStatuses=["Draft","Awaiting Payment","Confirmed","Paid","In Production","Shipped"];
   const allOrders=companies.flatMap(co=>(co.orders||[]).map(o=>({...o,companyId:co.id,companyName:co.name,companyContacts:co.contacts||[]})));
@@ -1893,59 +1878,6 @@ function Orders({ companies, allCategories, onUpdate, initialFilter, onClearFilt
         const co=companies.find(c=>c.id===coId);
         if(co){onUpdate({...co,orders:[...(co.orders||[]),{...order,id:uid()}]});}
       }} onClose={()=>setShowNewOrder(false)} />}
-    {trackPopup&&(
-        <div style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={e=>e.target===e.currentTarget&&setTrackPopup(null)}>
-          <div style={{background:"white",borderRadius:12,border:"1px solid #E2E8F0",overflow:"hidden",width:"100%",maxWidth:520}}>
-            <div style={{background:"#2C3E6B",padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-              <div>
-                <div style={{fontWeight:700,color:"white",fontSize:"0.85em"}}>{trackPopup.companyName}</div>
-                <div style={{color:"rgba(255,255,255,0.7)",fontSize:"0.72em",marginTop:2}}>{trackPopup.trackingNo}</div>
-              </div>
-              <button onClick={()=>setTrackPopup(null)} style={{background:"none",border:"none",color:"white",fontSize:22,cursor:"pointer",lineHeight:1}}>×</button>
-            </div>
-            <div style={{padding:16}}>
-              {trackLoading&&<div style={{textAlign:"center",padding:"24px 0",color:"#2C3E6B",fontWeight:700}}>Loading tracking data...</div>}
-              {!trackLoading&&trackData&&(()=>{
-                const status=trackData.tracking_status?.status||"Unknown";
-                const eta=trackData.eta?new Date(trackData.eta).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
-                const events=(trackData.tracking_history||[]).slice(0,6);
-                const statusColor=status==="DELIVERED"?"#16A34A":status==="TRANSIT"?"#2C3E6B":"#D97706";
-                const statusBg=status==="DELIVERED"?"#F0FDF4":status==="TRANSIT"?"#EFF6FF":"#FFFBEB";
-                return(
-                  <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-                      <div style={{background:statusBg,borderRadius:8,padding:"10px 12px",textAlign:"center"}}>
-                        <div style={{fontSize:"0.65em",fontWeight:700,color:statusColor,textTransform:"uppercase",marginBottom:3}}>Status</div>
-                        <div style={{fontWeight:700,color:"#111827",fontSize:"0.85em"}}>{status}</div>
-                      </div>
-                      <div style={{background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:8,padding:"10px 12px",textAlign:"center"}}>
-                        <div style={{fontSize:"0.65em",fontWeight:700,color:"#111827",textTransform:"uppercase",marginBottom:3}}>ETA</div>
-                        <div style={{fontWeight:700,color:"#111827",fontSize:"0.85em"}}>{eta}</div>
-                      </div>
-                      <div style={{background:"#F8FAFC",border:"1px solid #E2E8F0",borderRadius:8,padding:"10px 12px",textAlign:"center"}}>
-                        <div style={{fontSize:"0.65em",fontWeight:700,color:"#111827",textTransform:"uppercase",marginBottom:3}}>Carrier</div>
-                        <div style={{fontWeight:700,color:"#111827",fontSize:"0.85em"}}>{trackPopup.carrier||"—"}</div>
-                      </div>
-                    </div>
-                    {events.length>0&&<div style={{borderLeft:"2px solid #E8ECF4",paddingLeft:12,display:"flex",flexDirection:"column",gap:10}}>
-                      {events.map((ev,i)=>(
-                        <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start"}}>
-                          <div style={{width:8,height:8,borderRadius:"50%",background:i===0?"#2C3E6B":"#9CA3AF",marginTop:4,flexShrink:0}}></div>
-                          <div>
-                            <div style={{fontWeight:700,color:"#111827",fontSize:"0.85em"}}>{ev.status_details||ev.status}</div>
-                            <div style={{fontSize:"0.75em",color:"#374151",marginTop:1}}>{ev.location?.city?ev.location.city+", ":""}{ev.location?.state||""}{ev.status_date?" · "+new Date(ev.status_date).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):""}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>}
-                  </div>
-                );
-              })()}
-              {!trackLoading&&!trackData&&<div style={{textAlign:"center",padding:"20px 0",color:"#111827",fontWeight:700}}>No tracking data available</div>}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2702,7 +2634,7 @@ function TrackingPage({ companies, onGo }) {
                 </div>
                 <span style={{background:"#DBEAFE",color:"#1E40AF",fontWeight:600,padding:"3px 9px",borderRadius:99,fontSize:"0.82em"}}>Shipped</span>
                 <span style={{fontSize:"0.8em",color:"#374151"}}>No carrier ETA yet</span>
-                <button onClick={e=>{e.stopPropagation();fetchTrack(o);}} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em"}}>Track →</button>
+                <button onClick={e=>{e.stopPropagation();const tn=o.trackingNo,c=(o.carrier||"").toLowerCase();let u=c.includes("ups")||/^1Z/i.test(tn)?"https://www.ups.com/track?tracknum="+tn:c.includes("fedex")?"https://www.fedex.com/fedextrack/?trknbr="+tn:c.includes("usps")?"https://tools.usps.com/go/TrackConfirmAction?tLabels="+tn:c.includes("dhl")?"https://www.dhl.com/en/express/tracking.html?AWB="+tn:c.includes("yun")?"https://www.yuntrack.com/track?number="+tn:"https://parcelsapp.com/en/tracking/"+tn;window.open(u,"_blank");}} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em"}}>Track →</button>
               </div>
             ))}
           </div>
@@ -2757,7 +2689,7 @@ function TrackingPage({ companies, onGo }) {
                   <div style={{textAlign:"right",minWidth:80}}>
                     {o.eta?<div style={{color:isOverdueOrder?"#DC2626":"#374151",fontWeight:isOverdueOrder?700:400,fontSize:"0.85em"}}>ETA: {shortDate(o.eta)}{isOverdueOrder?" ⚠":""}</div>:<div style={{color:"#9CA3AF",fontSize:"0.85em"}}>No ETA</div>}
                   </div>
-                  <button onClick={e=>{e.stopPropagation();fetchTrack(o);}} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",whiteSpace:"nowrap"}}>Track →</button>
+                  <button onClick={e=>{e.stopPropagation();const tn=o.trackingNo,c=(o.carrier||"").toLowerCase();let u=c.includes("ups")||/^1Z/i.test(tn)?"https://www.ups.com/track?tracknum="+tn:c.includes("fedex")?"https://www.fedex.com/fedextrack/?trknbr="+tn:c.includes("usps")?"https://tools.usps.com/go/TrackConfirmAction?tLabels="+tn:c.includes("dhl")?"https://www.dhl.com/en/express/tracking.html?AWB="+tn:c.includes("yun")?"https://www.yuntrack.com/track?number="+tn:"https://parcelsapp.com/en/tracking/"+tn;window.open(u,"_blank");}} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"6px 14px",fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:"0.85em",whiteSpace:"nowrap"}}>Track →</button>
                 </div>
               );
             })}
