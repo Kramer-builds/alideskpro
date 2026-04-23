@@ -17,6 +17,10 @@
     button:active { opacity: 0.75; }
     @media (min-width: 768px) { .desktop-layout { display: block !important; } .mobile-layout { display: none !important; } }
     @media (max-width: 767px) { .desktop-layout { display: none !important; } .mobile-layout { display: block !important; } }
+    .adp-ord-ref-wrap { position: relative; display: inline-block; }
+    .adp-ord-ref { font-family: monospace; font-weight: 700; color: #2C3E6B; border-bottom: 1px dotted rgba(44,62,107,0.35); }
+    .adp-tip { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; width: 300px; background: white; border: 1px solid #E2E8F0; border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,0.15); padding: 12px 14px; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 0.12s; }
+    @media (hover: hover) and (pointer: fine) { .adp-ord-ref-wrap:hover .adp-tip { opacity: 1; visibility: visible; pointer-events: auto; } }
   </style>
 </head>
 <body>
@@ -185,6 +189,67 @@ const Modal = ({ title, onClose, children, wide }) => (
   </div>
 );
 
+// Dashboard helpers
+function TipRow({ label, value, valueColor, bold, mono }) {
+  return (
+    <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"flex-start"}}>
+      <span style={{color:"#6B7280",fontSize:"0.72em"}}>{label}</span>
+      <span style={{color:valueColor||"#111827",fontSize:"0.72em",fontWeight:bold?700:600,fontFamily:mono?"monospace":"inherit",textAlign:"right",wordBreak:"break-word"}}>{value}</span>
+    </div>
+  );
+}
+
+function DashOrderRow({ order, co, onGo, isLast }) {
+  const lineItems = order.lineItems || [];
+  const total = lineItems.reduce((s,li)=>s+li.qty*li.unitCost,0) || order.total || 0;
+  const itemCount = lineItems.length;
+  const unitCount = lineItems.reduce((s,li)=>s+(Number(li.qty)||0),0);
+  const contact = (co?.contacts||[]).find(c=>c.id===order.contactId) || (co?.contacts||[])[0];
+  const isOverdueEta = order.eta && isOverdue(order.eta);
+  const statusBg = { Draft:"#1F2937",Confirmed:"#2563EB",Paid:"#7C3AED","In Production":"#D97706",Shipped:"#0284C7",Received:"#0369A1","Awaiting Payment":"#D97706",Cancelled:"#EF4444",Archived:"#1F2937" }[order.status] || "#1F2937";
+  const daysStr = (()=>{
+    if(!order.eta) return null;
+    const days = Math.floor((new Date(order.eta+"T12:00:00") - new Date()) / 86400000);
+    if(days < 0) return `${Math.abs(days)} day${Math.abs(days)===1?"":"s"} late`;
+    if(days === 0) return "today";
+    return `${days} day${days===1?"":"s"}`;
+  })();
+  return (
+    <div onClick={e=>{e.stopPropagation();onGo("orders",null,{openOrderId:order.id});}} style={{display:"grid",gridTemplateColumns:"1fr auto 14px",gap:10,alignItems:"center",padding:"10px 16px",borderBottom:isLast?"none":"1px solid #F1F5F9",cursor:"pointer"}}>
+      <div style={{minWidth:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
+          <span className="adp-ord-ref-wrap">
+            <span className="adp-ord-ref" style={{fontSize:"0.78em"}}>{order.ref||"—"}</span>
+            <div className="adp-tip" onClick={e=>e.stopPropagation()}>
+              <div style={{fontWeight:700,color:"#111827",marginBottom:2,fontSize:"0.82em"}}>{order.ref||"—"}{order.label?" · "+order.label:""}</div>
+              <div style={{color:"#6B7280",fontSize:"0.72em",marginBottom:10}}>{co?.name}{contact?" · "+contact.name:""}</div>
+              <div style={{borderTop:"1px solid #F1F5F9",paddingTop:8,display:"flex",flexDirection:"column",gap:4}}>
+                <TipRow label="Status" value={order.status||"Draft"} valueColor={statusBg} bold />
+                <TipRow label="Ordered" value={order.date?fmtDate(order.date):"—"} />
+                <TipRow label="ETA" value={order.eta?`${fmtDate(order.eta)}${daysStr?" · "+daysStr:""}`:"—"} valueColor={isOverdueEta?"#DC2626":"#111827"} />
+                {order.trackingNo&&<TipRow label="Tracking" value={order.trackingNo} mono />}
+                {order.carrier&&<TipRow label="Carrier" value={order.carrier} />}
+                {itemCount>0&&<TipRow label="Line items" value={`${itemCount} item${itemCount===1?"":"s"}${unitCount?" · "+unitCount+" units":""}`} />}
+                {order.notes&&<TipRow label="Notes" value={order.notes} />}
+                <TipRow label="Total" value={fmtMoney(total)} valueColor="#2C3E6B" bold />
+              </div>
+            </div>
+          </span>
+          <span style={{fontSize:"0.82em",color:"#111827",fontWeight:600}}>{order.label||co?.name||"—"}</span>
+          <span style={{background:statusBg,color:"white",fontWeight:700,padding:"2px 7px",borderRadius:99,fontSize:"0.62em",whiteSpace:"nowrap",textTransform:"uppercase",letterSpacing:0.3}}>{order.status||"Draft"}</span>
+        </div>
+        <div style={{fontSize:"0.72em",color:"#6B7280"}}>
+          {co?.name||"—"}
+          {order.eta&&<span style={{color:isOverdueEta?"#DC2626":"#6B7280",fontWeight:isOverdueEta?700:400}}> · ETA {shortDate(order.eta)}{isOverdueEta?" ⚠":""}</span>}
+          {itemCount>0&&<span> · {itemCount} item{itemCount===1?"":"s"}</span>}
+        </div>
+      </div>
+      <span style={{fontSize:"0.82em",color:"#111827",fontWeight:700,whiteSpace:"nowrap"}}>{fmtMoney(total)}</span>
+      <span style={{color:"#9CA3AF",fontSize:"0.9em",fontWeight:600}}>›</span>
+    </div>
+  );
+}
+
 // Dashboard
 function Dashboard({ companies, budgets, onGo }) {
   const allOrders = companies.flatMap(c => c.orders || []);
@@ -204,22 +269,17 @@ function Dashboard({ companies, budgets, onGo }) {
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
 
                 {/* Active Orders */}
-        <div onClick={()=>onGo("orders",null,{status:"active"})} style={{background:"white",borderRadius:12,cursor:"pointer",border:"1px solid #E2E8F0",overflow:"hidden"}}>
-          <div style={{background:"#2C3E6B",borderLeft:"5px solid #3B82F6",padding:"10px 16px",display:"flex",alignItems:"center",gap:12}}>
+        <div onClick={()=>onGo("orders",null,{status:"active"})} style={{background:"white",borderRadius:12,cursor:"pointer",border:"1px solid #E2E8F0"}}>
+          <div style={{background:"#2C3E6B",borderLeft:"5px solid #3B82F6",padding:"10px 16px",display:"flex",alignItems:"center",gap:12,borderRadius:"12px 12px 0 0"}}>
             <span style={{fontSize:"1.5em",fontWeight:700,color:activeOrders.length>0?"#93C5FD":"rgba(255,255,255,0.5)",lineHeight:1,flexShrink:0}}>{activeOrders.length}</span>
             <span style={{fontSize:"0.72em",fontWeight:700,color:"white",textTransform:"uppercase",letterSpacing:0.7}}>Active Orders</span>
             {activeOrders.length===0&&<span style={{fontSize:"0.72em",color:"rgba(255,255,255,0.6)",marginLeft:4}}>— No active orders</span>}
           </div>
           {activeOrders.length>0&&(
-            <div style={{borderTop:"1px solid #F1F5F9",padding:"10px 18px",display:"flex",flexDirection:"column",gap:6}}>
-              {activeOrders.map(o=>{
+            <div style={{borderTop:"1px solid #F1F5F9",display:"flex",flexDirection:"column"}}>
+              {activeOrders.map((o,i)=>{
                 const co=companies.find(c=>(c.orders||[]).some(x=>x.id===o.id));
-                return (
-                  <div key={o.id} style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:"0.82em",color:"#111827",fontWeight:600}}>{o.label||o.ref||co?.name}</span>
-                    <span style={{fontSize:"0.82em",color:"#374151"}}>· {o.status}</span>
-                  </div>
-                );
+                return <DashOrderRow key={o.id} order={o} co={co} onGo={onGo} isLast={i===activeOrders.length-1} />;
               })}
             </div>
           )}
@@ -227,26 +287,19 @@ function Dashboard({ companies, budgets, onGo }) {
 
         {/* Awaiting Payment */}
         {awaitingPayment.length>=0&&(
-          <div onClick={()=>onGo("orders",null,{status:"Awaiting Payment"})} style={{background:"white",borderRadius:12,cursor:"pointer",border:"1px solid #E2E8F0",overflow:"hidden"}}>
-            <div style={{background:"#2C3E6B",borderLeft:"5px solid #F59E0B",padding:"10px 16px",display:"flex",alignItems:"center",gap:12}}>
+          <div onClick={()=>onGo("orders",null,{status:"Awaiting Payment"})} style={{background:"white",borderRadius:12,cursor:"pointer",border:"1px solid #E2E8F0"}}>
+            <div style={{background:"#2C3E6B",borderLeft:"5px solid #F59E0B",padding:"10px 16px",display:"flex",alignItems:"center",gap:12,borderRadius:"12px 12px 0 0"}}>
               <span style={{fontSize:"1.5em",fontWeight:700,color:awaitingPayment.length>0?"#FCD34D":"rgba(255,255,255,0.5)",lineHeight:1,flexShrink:0}}>{awaitingPayment.length}</span>
               <span style={{fontSize:"0.72em",fontWeight:700,color:"white",textTransform:"uppercase",letterSpacing:0.7}}>Awaiting Payment</span>
               {awaitingPayment.length===0&&<span style={{fontSize:"0.72em",color:"rgba(255,255,255,0.6)",marginLeft:4}}>— All paid up</span>}
             </div>
             {awaitingPayment.length>0&&(
-              <div style={{borderTop:"1px solid #F1F5F9",padding:"10px 18px",display:"flex",flexDirection:"column",gap:6}}>
-                {awaitingPayment.map(o=>{
+              <div style={{borderTop:"1px solid #F1F5F9",display:"flex",flexDirection:"column"}}>
+                {awaitingPayment.map((o,i)=>{
                   const co=companies.find(c=>(c.orders||[]).some(x=>x.id===o.id));
-                  const total=(o.lineItems||[]).reduce((s,li)=>s+li.qty*li.unitCost,0)||o.total||0;
-                  return (
-                    <div key={o.id} style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:"0.82em",color:"#111827",fontWeight:600}}>{o.label||o.ref||co?.name}</span>
-                      <span style={{fontSize:"0.75em",color:"#6B7280"}}>· {co?.name}</span>
-                      <span style={{fontSize:"0.78em",color:"#D97706",fontWeight:600,marginLeft:"auto"}}>{total>0?("$"+Number(total).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})):""}</span>
-                    </div>
-                  );
+                  return <DashOrderRow key={o.id} order={o} co={co} onGo={onGo} isLast={i===awaitingPayment.length-1} />;
                 })}
-                <div style={{borderTop:"1px solid rgba(255,255,255,0.1)",marginTop:4,paddingTop:4}}>
+                <div style={{padding:"8px 16px 10px",background:"#FFFBEB",borderTop:"1px solid #FDE68A",borderRadius:"0 0 12px 12px"}}>
                   <span style={{fontSize:"0.78em",color:"#D97706",fontWeight:700}}>
                     Total owed: ${awaitingPayment.reduce((s,o)=>s+((o.lineItems||[]).reduce((ss,li)=>ss+li.qty*li.unitCost,0)||o.total||0),0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}
                   </span>
@@ -260,22 +313,17 @@ function Dashboard({ companies, budgets, onGo }) {
         {(()=>{
           const shippedNoTracking=allOrders.filter(o=>o.status==="Shipped"&&(!o.trackingNo||!o.trackingNo.trim()));
           return (
-            <div onClick={()=>onGo("orders",null,{status:"Shipped"})} style={{background:"white",borderRadius:12,cursor:"pointer",border:"1px solid #E2E8F0",overflow:"hidden"}}>
-              <div style={{background:"#2C3E6B",borderLeft:"5px solid #F97316",padding:"10px 16px",display:"flex",alignItems:"center",gap:12}}>
+            <div onClick={()=>onGo("orders",null,{status:"Shipped"})} style={{background:"white",borderRadius:12,cursor:"pointer",border:"1px solid #E2E8F0"}}>
+              <div style={{background:"#2C3E6B",borderLeft:"5px solid #F97316",padding:"10px 16px",display:"flex",alignItems:"center",gap:12,borderRadius:"12px 12px 0 0"}}>
                 <span style={{fontSize:"1.5em",fontWeight:700,color:shippedNoTracking.length>0?"#FB923C":"rgba(255,255,255,0.5)",lineHeight:1,flexShrink:0}}>{shippedNoTracking.length}</span>
                 <span style={{fontSize:"0.72em",fontWeight:700,color:"white",textTransform:"uppercase",letterSpacing:0.7}}>Missing Tracking</span>
                 {shippedNoTracking.length===0&&<span style={{fontSize:"0.72em",color:"rgba(255,255,255,0.6)",marginLeft:4}}>— All tracked</span>}
               </div>
               {shippedNoTracking.length>0&&(
-                <div style={{borderTop:"1px solid #F1F5F9",padding:"10px 18px",display:"flex",flexDirection:"column",gap:6}}>
-                  {shippedNoTracking.map(o=>{
+                <div style={{borderTop:"1px solid #F1F5F9",display:"flex",flexDirection:"column"}}>
+                  {shippedNoTracking.map((o,i)=>{
                     const co=companies.find(c=>(c.orders||[]).some(x=>x.id===o.id));
-                    return (
-                      <div key={o.id} style={{display:"flex",alignItems:"center",gap:8}}>
-                        <span style={{fontSize:"0.82em",color:"#111827",fontWeight:600}}>{o.label||o.ref||co?.name}</span>
-                        <span style={{fontSize:"0.78em",color:"#6B7280"}}>· {co?.name}</span>
-                      </div>
-                    );
+                    return <DashOrderRow key={o.id} order={o} co={co} onGo={onGo} isLast={i===shippedNoTracking.length-1} />;
                   })}
                 </div>
               )}
@@ -291,11 +339,12 @@ function Dashboard({ companies, budgets, onGo }) {
             {overdue.length===0&&<span style={{fontSize:"0.72em",color:"rgba(255,255,255,0.6)",marginLeft:4}}>— Nothing overdue</span>}
           </div>
           {overdue.length>0&&(
-            <div style={{borderTop:"1px solid #F1F5F9",padding:"10px 18px",display:"flex",flexDirection:"column",gap:6}}>
+            <div style={{borderTop:"1px solid #F1F5F9",padding:"6px 0",display:"flex",flexDirection:"column"}}>
               {overdue.map(t=>(
-                <div key={t.id} style={{display:"flex",alignItems:"center",gap:8}}>
+                <div key={t.id} onClick={e=>{e.stopPropagation();onGo("company",t.companyId);}} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 18px",cursor:"pointer"}}>
                   <span style={{fontSize:"0.82em",color:"#111827",fontWeight:600}}>{t.task}</span>
                   <span style={{fontSize:"0.75em",color:"#6B7280"}}>· {t.companyName?.split(" ")[0]}</span>
+                  <span style={{marginLeft:"auto",color:"#9CA3AF",fontSize:"0.9em",fontWeight:600}}>›</span>
                 </div>
               ))}
             </div>
@@ -1700,6 +1749,22 @@ function Orders({ companies, allCategories, onUpdate, initialFilter, onClearFilt
   const updateOrder=(orderId,companyId,patch)=>{const co=companies.find(c=>c.id===companyId);if(!co)return;onUpdate({...co,orders:(co.orders||[]).map(o=>o.id===orderId?{...o,...patch}:o)});};
   const deleteOrder=(orderId,companyId)=>{if(!window.confirm("Delete this order?"))return;const co=companies.find(c=>c.id===companyId);if(!co)return;onUpdate({...co,orders:(co.orders||[]).filter(o=>o.id!==orderId)});};
 
+  // Auto-expand order inline when openOrderId is passed in via initialFilter (from dashboard row clicks)
+  useEffect(()=>{
+    if(initialFilter?.openOrderId){
+      const target=allOrders.find(o=>o.id===initialFilter.openOrderId);
+      if(target){
+        setExpandedOrder(target.id);
+        // Scroll expanded row into view after paint
+        requestAnimationFrame(()=>{
+          const el=document.querySelector(`[data-order-id="${target.id}"]`);
+          if(el)el.scrollIntoView({behavior:"smooth",block:"center"});
+        });
+      }
+      if(onClearFilter)onClearFilter();
+    }
+  },[initialFilter?.openOrderId]);
+
   const activeCount=allOrders.filter(o=>activeStatuses.includes(o.status)).length;
   const totalValue=allOrders.reduce((s,o)=>s+(o.lineItems||[]).reduce((ss,li)=>ss+li.qty*li.unitCost,0),0);
   const overdueCt=allOrders.filter(o=>o.eta&&isOverdue(o.eta)&&activeStatuses.includes(o.status)).length;
@@ -1778,6 +1843,7 @@ function Orders({ companies, allCategories, onUpdate, initialFilter, onClearFilt
                 return (
                   <React.Fragment key={order.id}>
                     <tr
+                      data-order-id={order.id}
                       onClick={()=>setExpandedOrder(expanded?null:order.id)}
                       style={{borderBottom:"2px solid #E8ECF4",cursor:"pointer",background:expanded?"#F0F4FF":"white",transition:"background 0.1s",verticalAlign:"top"}}
                       onMouseOver={e=>{if(!expanded)e.currentTarget.style.background="#F8FAFC";}}
@@ -2403,35 +2469,36 @@ function PricingTool() {
         </>}
 
         {result && <>
-          <div style={{background:'#2C3E6B',borderRadius:10,padding:'16px 24px'}}>
+          <div style={{background:'#2C3E6B',borderRadius:10,padding:'16px 18px'}}>
             <div style={{fontSize:'0.75em',fontWeight:700,color:'white',textTransform:'uppercase',letterSpacing:0.7,marginBottom:12}}>Your Results</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:0}}>
-              <div style={{paddingRight:20,borderRight:'1px solid rgba(255,255,255,0.15)'}}>
-                <div style={{fontSize:'0.72em',color:'white',textTransform:'uppercase',fontWeight:700,marginBottom:4}}>Gross Margin</div>
-                <div style={{fontSize:'1.9em',fontWeight:700,color:'#4ADE80'}}>{fmtP(result.margin)}</div>
+            <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)',gap:0}}>
+              <div style={{paddingRight:8,borderRight:'1px solid rgba(255,255,255,0.15)',minWidth:0,overflow:'hidden'}}>
+                <div style={{fontSize:'0.6em',color:'white',textTransform:'uppercase',fontWeight:700,marginBottom:4,whiteSpace:'nowrap'}}>Gross Margin</div>
+                <div style={{fontSize:'1.05em',fontWeight:700,color:'#4ADE80',lineHeight:1.1,whiteSpace:'nowrap'}}>{fmtP(result.margin)}</div>
               </div>
-              <div style={{padding:'0 20px',borderRight:'1px solid rgba(255,255,255,0.15)'}}>
-                <div style={{fontSize:'0.72em',color:'white',textTransform:'uppercase',fontWeight:700,marginBottom:4}}>Markup</div>
-                <div style={{fontSize:'1.9em',fontWeight:700,color:'white'}}>{fmtP(result.markup)}</div>
+              <div style={{padding:'0 8px',borderRight:'1px solid rgba(255,255,255,0.15)',minWidth:0,overflow:'hidden'}}>
+                <div style={{fontSize:'0.6em',color:'white',textTransform:'uppercase',fontWeight:700,marginBottom:4,whiteSpace:'nowrap'}}>Markup</div>
+                <div style={{fontSize:'1.05em',fontWeight:700,color:'white',lineHeight:1.1,whiteSpace:'nowrap'}}>{fmtP(result.markup)}</div>
               </div>
-              <div style={{paddingLeft:20}}>
-                <div style={{fontSize:'0.72em',color:'white',textTransform:'uppercase',fontWeight:700,marginBottom:4}}>Profit / Unit</div>
-                <div style={{fontSize:'1.9em',fontWeight:700,color:'white'}}>{fmt$(result.profit)}{result.sellPrice&&<span style={{fontSize:'0.6em',marginLeft:8,opacity:0.8}}>@ {fmt$(result.sellPrice)}</span>}</div>
+              <div style={{paddingLeft:8,minWidth:0,overflow:'hidden'}}>
+                <div style={{fontSize:'0.6em',color:'white',textTransform:'uppercase',fontWeight:700,marginBottom:4,whiteSpace:'nowrap'}}>Profit</div>
+                <div style={{fontSize:'1.05em',fontWeight:700,color:'white',lineHeight:1.1,whiteSpace:'nowrap'}}>{fmt$(result.profit)}</div>
+                {result.sellPrice&&<div style={{fontSize:'0.65em',color:'rgba(255,255,255,0.75)',marginTop:4,whiteSpace:'nowrap'}}>@ {fmt$(result.sellPrice)}</div>}
               </div>
             </div>
           </div>
 
           {(()=>{const v=verdict(result);return <div style={{background:v.bg,border:`1px solid ${v.border}`,borderRadius:8,padding:'10px 14px',fontSize:'0.85em',color:v.color,fontWeight:600}}>{v.msg}</div>})()}
 
-          <div style={{fontSize:'0.78em',fontWeight:700,color:'#111827',textTransform:'uppercase',letterSpacing:0.7,marginTop:4}}>Same cost, different margins</div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,maxWidth:600}}>
+          <div style={{fontSize:'0.72em',fontWeight:700,color:'#111827',textTransform:'uppercase',letterSpacing:0.7,marginTop:4}}>Same cost, different margins</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:8,maxWidth:600}}>
             {scenarios.map(s=>(
-              <div key={s.pct} style={{background:'#2C3E6B',borderRadius:8,padding:14}}>
-                <div style={{fontSize:'1.3em',fontWeight:700,color:'white',marginBottom:8}}>{s.pct}%</div>
-                <div style={{fontSize:'0.7em',fontWeight:700,color:'rgba(255,255,255,0.8)',textTransform:'uppercase',marginBottom:2}}>Sell Price</div>
-                <div style={{fontSize:'1.05em',fontWeight:700,color:'white',marginBottom:8}}>{fmt$(s.sellPrice)}</div>
-                <div style={{fontSize:'0.7em',fontWeight:700,color:'rgba(255,255,255,0.8)',textTransform:'uppercase',marginBottom:2}}>Profit</div>
-                <div style={{fontSize:'1.05em',fontWeight:700,color:'#4ADE80'}}>{fmt$(s.profit)}</div>
+              <div key={s.pct} style={{background:'#2C3E6B',borderRadius:8,padding:'10px 10px',minWidth:0,overflow:'hidden'}}>
+                <div style={{fontSize:'1.05em',fontWeight:700,color:'white',marginBottom:6,whiteSpace:'nowrap'}}>{s.pct}%</div>
+                <div style={{fontSize:'0.58em',fontWeight:700,color:'rgba(255,255,255,0.8)',textTransform:'uppercase',marginBottom:1,whiteSpace:'nowrap'}}>Sell Price</div>
+                <div style={{fontSize:'0.88em',fontWeight:700,color:'white',marginBottom:6,whiteSpace:'nowrap'}}>{fmt$(s.sellPrice)}</div>
+                <div style={{fontSize:'0.58em',fontWeight:700,color:'rgba(255,255,255,0.8)',textTransform:'uppercase',marginBottom:1,whiteSpace:'nowrap'}}>Profit</div>
+                <div style={{fontSize:'0.88em',fontWeight:700,color:'#4ADE80',whiteSpace:'nowrap'}}>{fmt$(s.profit)}</div>
               </div>
             ))}
           </div>
@@ -2882,19 +2949,8 @@ function App() {
           {nav==="companies"&&!company&&<CompanyList companies={companies} onSelect={id=>setSelectedCompany(id)} onAdd={()=>setAddCompanyModal(true)} onImport={()=>setShowImport(true)} onBulkDelete={ids=>{setCompanies(cs=>cs.filter(c=>!ids.includes(c.id)));}} initialFilter={dashFilter} onClearFilter={()=>setDashFilter(null)} />}
           {nav==="companies"&&company&&<CompanyDetail company={company} onUpdate={updateCompany} onBack={()=>setSelectedCompany(null)} allCategories={categories} />}
           {nav==="orders"&&<Orders companies={companies} allCategories={categories} onUpdate={updateCompany} initialFilter={dashFilter} onClearFilter={()=>setDashFilter(null)} />}
-      {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
-      {nav==="pricing"&&<div style={{background:"white",borderRadius:12,border:"1px solid #E2E8F0",overflow:"hidden"}}>
-        <div style={{background:"#2C3E6B",padding:"12px 20px"}}>
-          <span style={{fontWeight:700,color:"white",fontSize:"0.75em",textTransform:"uppercase",letterSpacing:0.7}}>Pricing Tool</span>
-        </div>
-        <div style={{padding:"10px 20px",background:"white",borderBottom:"2px solid #E8ECF4"}}>
-          <div style={{display:"inline-flex",gap:2,background:"#F1F5F9",borderRadius:8,padding:3}}>
-            <button style={{background:"#2C3E6B",border:"none",color:"white",borderRadius:6,padding:"7px 20px",fontWeight:700,fontSize:"0.78em",cursor:"pointer",fontFamily:"inherit"}}>Assess Margin</button>
-            <button style={{background:"transparent",border:"none",color:"#6B7280",borderRadius:6,padding:"7px 20px",fontWeight:600,fontSize:"0.78em",cursor:"pointer",fontFamily:"inherit"}}>Find Sell Price</button>
-          </div>
-        </div>
-        <div style={{padding:32,textAlign:"center",color:"#9CA3AF",fontSize:"0.85em",background:"#F8FAFC"}}>Calculator coming next</div>
-      </div>}
+          {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
+          {nav==="pricing"&&<PricingTool />}
           {nav==="tasks"&&<TasksView companies={companies} onUpdateCompany={updateCompany} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
           {nav==="contacts"&&<ContactsCRM companies={companies} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
           {nav==="budget"&&<Budget budgets={budgets} onUpdate={b=>setBudgets(bs=>bs.map(x=>x.id===b.id?b:x))} onAdd={b=>setBudgets(bs=>[...bs,b])} onDelete={id=>setBudgets(bs=>bs.filter(b=>b.id!==id))} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
