@@ -8,7 +8,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #F8FAFC; font-family: -apple-system, BlinkMacSystemFont, sans-serif; overflow-x: hidden; font-size: 18px; color: #111827; line-height: 1.5; }
@@ -1096,7 +1095,7 @@ function ShippingWidget({ companies, onGo }) {
       var o = tracked[i];
       var carrier = o.carrier ? o.carrier.toLowerCase().replace(/\s/g,"_") : detectCarrier(o.trackingNo);
       try {
-        var resp = await fetch("https://api.goshippo.com/tracks/"+carrier+"/"+o.trackingNo, {headers:{"Authorization":"ShippoToken "+SHIPPO_KEY}});
+        var resp = await fetch("/.netlify/functions/shippo", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carrier:carrier,trackingNo:o.trackingNo})});
         if(resp.ok){ var d = await resp.json(); results[o.id] = d; }
       } catch(e) {}
     }
@@ -1902,7 +1901,6 @@ function EditOrderModal({ order, companies, allCategories, onSave, onClose }) {
     notes: order.notes||""
   });
   const [lineItems,setLineItems] = useState(order.lineItems&&order.lineItems.length>0 ? order.lineItems : [{id:uid(),description:"",category:allCategories[0]||"",qty:"",unitCost:""}]);
-  const [showScanWindow, setShowScanWindow] = React.useState(false);
   const u = (k,v) => setF(p=>({...p,[k]:v}));
   const total = lineItems.reduce((s,li)=>s+(Number(li.qty)||0)*(Number(li.unitCost)||0),0);
 
@@ -1917,78 +1915,6 @@ function EditOrderModal({ order, companies, allCategories, onSave, onClose }) {
         <Sel label="Status" value={f.status} options={[{v:"Draft",l:"Draft"},{v:"Awaiting Payment",l:"Awaiting Payment"},...ORDER_COLS.map(c=>({v:c.id,l:c.label}))]} onChange={e=>u("status",e.target.value)} />
       </Grid>
       {contacts.length>0&&<Sel label="Contact" value={f.contactId} options={[{v:"",l:"Not specified"},...contacts.map(c=>({v:c.id,l:c.name}))]} onChange={e=>u("contactId",e.target.value)} />}
-      <div style={{background:"white",borderRadius:10,border:"1px solid #E2E8F0",overflow:"hidden"}}>
-        <div style={{background:"#2C3E6B",padding:"8px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-          <span style={{fontWeight:700,color:"white",fontSize:"0.72em",textTransform:"uppercase",letterSpacing:0.7}}>Shipping Label</span>
-          <span style={{color:"rgba(255,255,255,0.6)",fontSize:"0.72em"}}>optional</span>
-        </div>
-        <div style={{padding:"12px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
-          <span style={{fontSize:"0.85em",color:"#111827"}}>Upload a label to auto-fill tracking # and carrier</span>
-          <button onClick={()=>setShowScanWindow(true)} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"9px 16px",fontWeight:700,fontSize:"0.8em",cursor:"pointer",whiteSpace:"nowrap",fontFamily:"inherit"}}>📎 Scan Label</button>
-        </div>
-      </div>
-      {showScanWindow&&(
-        <div style={{position:"fixed",inset:0,zIndex:999,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={e=>e.target===e.currentTarget&&setShowScanWindow(false)}>
-          <div style={{background:"white",borderRadius:12,border:"1px solid #E2E8F0",overflow:"hidden",width:"100%",maxWidth:480}}>
-            <div style={{background:"#2C3E6B",padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-              <span style={{fontWeight:700,color:"white",fontSize:"0.85em"}}>Scan Shipping Label</span>
-              <button onClick={()=>setShowScanWindow(false)} style={{background:"none",border:"none",color:"white",fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>
-            </div>
-            <div style={{padding:24,display:"flex",flexDirection:"column",gap:16}}>
-              <div style={{border:"2px dashed #2C3E6B",borderRadius:10,padding:"32px 20px",textAlign:"center",background:"#F8FAFC"}}>
-                <div style={{fontSize:"2.5em",marginBottom:10}}>📎</div>
-                <div style={{fontWeight:700,color:"#2C3E6B",fontSize:"0.95em",marginBottom:6}}>Upload Shipping Label</div>
-                <div style={{fontSize:"0.82em",color:"#111827",marginBottom:16}}>JPG, PNG, or PDF — tracking info extracted automatically</div>
-                <label style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:"10px 24px",fontWeight:700,fontSize:"0.85em",cursor:"pointer",display:"inline-block"}}>
-                  <input type="file" accept="image/*,.pdf" style={{display:"none"}} onChange={async e=>{
-                    const file=e.target.files[0];
-                    if(!file)return;
-                    setShowScanWindow("scanning");
-                    try{
-                      const { data: { text } } = await Tesseract.recognize(file, 'eng');
-                      // Extract tracking number - look for common patterns
-                      // Extract carrier first
-                      let carrier = "";
-                      const cPatterns = [
-                        {r:/UPS/i,n:"UPS"},{r:/FedEx/i,n:"FedEx"},{r:/USPS/i,n:"USPS"},
-                        {r:/DHL/i,n:"DHL"},{r:/YunExpress/i,n:"YunExpress"},{r:/4PX/i,n:"4PX"}
-                      ];
-                      for(const c of cPatterns){ if(c.r.test(text)){carrier=c.n;break;} }
-                      // Extract tracking number
-                      let trackingNo = "";
-                      const tMatch = text.match(/TRACKING\s*#[:\s]*([A-Z0-9 ]{10,30})/i)
-                        || text.match(/1Z[A-Z0-9 ]{15,20}/i)
-                        || text.match(/9[0-9]{15,21}/)
-                        || text.match(/[0-9]{4} [0-9]{4} [0-9]{4}/)
-                        || text.match(/[0-9]{12,22}/);
-                      if(tMatch) trackingNo = tMatch[0].replace(/TRACKING\s*#[:\s]*/i,"").replace(/\s/g,"").trim();
-                      if(!trackingNo && !carrier){ alert("Could not detect tracking info. Tesseract read: " + text.slice(0,300)); setShowScanWindow(true); return; }
-                      if(trackingNo) u("trackingNo", trackingNo);
-                      if(carrier) u("carrier", carrier);
-                      setShowScanWindow("done");
-                    }catch(err){
-                      alert("Could not scan label — try a clearer photo or enter manually. Error: " + err.message);
-                      setShowScanWindow(true);
-                    }
-                  }} />
-                  Choose File
-                </label>
-              </div>
-              {showScanWindow==="scanning"&&<div style={{textAlign:"center",padding:"8px 0",fontWeight:700,color:"#2C3E6B",fontSize:"0.9em"}}>Scanning label...</div>}
-              {showScanWindow==="done"&&<div style={{background:"#F0FDF4",border:"1px solid #BBF7D0",borderRadius:8,padding:"12px 16px",display:"flex",alignItems:"center",gap:10}}>
-                <span style={{fontSize:"1.3em"}}>✓</span>
-                <div>
-                  <div style={{fontWeight:700,color:"#16A34A",fontSize:"0.88em"}}>Label scanned — tracking # and carrier filled in</div>
-                  <div style={{fontSize:"0.78em",color:"#111827",marginTop:2}}>Click Done to close and review the fields</div>
-                </div>
-              </div>}
-              <button onClick={()=>setShowScanWindow(false)} style={{background:"#2C3E6B",color:"white",border:"none",borderRadius:8,padding:12,fontWeight:700,fontSize:"0.85em",cursor:"pointer",fontFamily:"inherit",textTransform:"uppercase",letterSpacing:0.5}}>
-                {showScanWindow==="done"?"Done":"Close"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <Grid>
         <Inp label="ETA" type="date" value={f.eta} onChange={e=>u("eta",e.target.value)} />
         <Inp label="Tracking #" value={f.trackingNo} onChange={e=>u("trackingNo",e.target.value)} />
