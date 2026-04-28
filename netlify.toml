@@ -1,0 +1,24 @@
+# Netlify configuration for AliDeskPro
+# Tells Netlify where Functions live and configures basic routing.
+
+[build]
+  # Static site root (where index.html lives) is the repo root
+  publish = "."
+  # No build command — index.html is already final HTML
+  command = ""
+
+[functions]
+  # Where Netlify Functions live in the repo
+  directory = "netlify/functions"
+  # Bundling: 'esbuild' is fast and handles ES modules cleanly
+  node_bundler = "esbuild"
+  # Functions can use external dependencies declared in package.json
+  external_node_modules = ["googleapis"]
+
+# Default headers for static files
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

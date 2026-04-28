@@ -1,0 +1,15 @@
+# Dependencies (Netlify auto-installs from package.json on deploy)
+node_modules/
+
+# Local Netlify state (created by the CLI, not needed in repo)
+.netlify/
+
+# OS / editor
+.DS_Store
+.vscode/
+*.swp
+
+# Local env files (we use Netlify dashboard env vars, but defensive)
+.env
+.env.local
+.env.*.local

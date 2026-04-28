@@ -466,6 +466,411 @@ function Dashboard({ companies, budgets, onGo }) {
 }
 
 // Tasks View
+function InboxView({ companies }) {
+  // Connection state (loaded from /gmail-status)
+  const [status, setStatus] = useState({ loading: true });
+  // Messages list (loaded from ali4_messages)
+  const [messages, setMessages] = useState([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  // Selected thread for detail view
+  const [selectedThread, setSelectedThread] = useState(null);
+  // Sync state
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  // Filter
+  const [filter, setFilter] = useState("all"); // 'all' | 'unread' | 'unmatched'
+  // Reply composer
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const totalContactsWithEmail = companies.reduce((n, c) => n + (c.contacts || []).filter(ct => ct.email && ct.email.trim()).length, 0);
+  const totalContacts = companies.reduce((n, c) => n + (c.contacts || []).length, 0);
+  const missingEmails = totalContacts - totalContactsWithEmail;
+
+  // ---- Data loaders ----
+  const loadStatus = async () => {
+    try {
+      const r = await fetch("/.netlify/functions/gmail-status");
+      const data = await r.json();
+      setStatus({ loading: false, ...data });
+    } catch (e) {
+      setStatus({ loading: false, connected: false, error: e.message });
+    }
+  };
+
+  const loadMessages = async () => {
+    setLoadingMessages(true);
+    try {
+      const url = SB_URL + "/rest/v1/ali4_messages?select=*&order=received_at.desc&limit=200";
+      const r = await fetch(url, {
+        headers: { "apikey": SB_KEY, "Authorization": "Bearer " + SB_KEY },
+      });
+      if (r.ok) {
+        const rows = await r.json();
+        setMessages(rows || []);
+      }
+    } catch (e) {
+      console.error("loadMessages failed:", e);
+    }
+    setLoadingMessages(false);
+  };
+
+  useEffect(() => {
+    loadStatus();
+    loadMessages();
+  }, []);
+
+  // Listen for the OAuth popup posting back its success message.
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.data && e.data.type === "gmail_connected") {
+        // Reload status; new tokens are now in Supabase.
+        loadStatus();
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  // ---- Actions ----
+  const onConnect = () => {
+    // Open in a popup so we can detect completion via postMessage.
+    const w = 520, h = 640;
+    const left = (window.screen.width - w) / 2;
+    const top = (window.screen.height - h) / 2;
+    window.open("/.netlify/functions/gmail-oauth-start", "gmailConnect",
+      `width=${w},height=${h},left=${left},top=${top}`);
+  };
+
+  const onDisconnect = async () => {
+    if (!window.confirm("Disconnect Gmail? Existing messages stay; new mail won't sync until you reconnect.")) return;
+    try {
+      await fetch("/.netlify/functions/gmail-disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      await loadStatus();
+    } catch (e) { alert("Disconnect failed: " + e.message); }
+  };
+
+  const onSync = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const r = await fetch("/.netlify/functions/gmail-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxMessages: 50 }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Sync failed");
+      setSyncResult(data);
+      await loadMessages();
+    } catch (e) {
+      setSyncResult({ error: e.message });
+    }
+    setSyncing(false);
+  };
+
+  const onSendReply = async () => {
+    if (!replyText.trim() || !selectedThread) return;
+    setSending(true);
+    try {
+      const last = selectedThread.messages[selectedThread.messages.length - 1];
+      const replyTo = last.direction === "inbound" ? last.from_email : (last.to_emails || [])[0];
+      const subject = last.subject.startsWith("Re:") ? last.subject : `Re: ${last.subject}`;
+      const r = await fetch("/.netlify/functions/gmail-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: replyTo,
+          subject,
+          body: replyText,
+          threadId: selectedThread.threadId,
+          inReplyTo: last.gmail_message_id,
+          companyId: last.company_id,
+          contactId: last.contact_id,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Send failed");
+      setReplyText("");
+      await loadMessages();
+      // Re-find the thread we were viewing.
+      setSelectedThread(prev => prev ? { ...prev } : null);
+    } catch (e) {
+      alert("Send failed: " + e.message);
+    }
+    setSending(false);
+  };
+
+  // ---- Group messages by thread ----
+  const filtered = messages.filter(m => {
+    if (filter === "unread") return !m.is_read && m.direction === "inbound";
+    if (filter === "unmatched") return !m.company_id;
+    return true;
+  });
+  const threads = (() => {
+    const byThread = new Map();
+    for (const m of filtered) {
+      const key = m.thread_id || m.gmail_message_id;
+      if (!byThread.has(key)) byThread.set(key, []);
+      byThread.get(key).push(m);
+    }
+    return [...byThread.values()].map(arr => {
+      const sorted = arr.sort((a, b) => (a.received_at || "").localeCompare(b.received_at || ""));
+      const last = sorted[sorted.length - 1];
+      const company = companies.find(c => c.id === last.company_id);
+      return {
+        threadId: sorted[0].thread_id || sorted[0].gmail_message_id,
+        messages: sorted,
+        last,
+        company,
+        unreadCount: sorted.filter(m => !m.is_read && m.direction === "inbound").length,
+        waiting: last.direction === "inbound" && !last.is_read,
+      };
+    }).sort((a, b) => (b.last.received_at || "").localeCompare(a.last.received_at || ""));
+  })();
+
+  const unreadTotal = messages.filter(m => !m.is_read && m.direction === "inbound").length;
+  const unmatchedTotal = messages.filter(m => !m.company_id).length;
+
+  // ---- Render ----
+  if (status.loading) {
+    return <div style={{ padding: 40, textAlign: "center", color: "#6B7280" }}>Loading inbox...</div>;
+  }
+
+  // Not connected → show the connect screen (similar to before but functional now)
+  if (!status.connected) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "16px 18px" }}>
+          <T size={22} weight={700} color="#2C3E6B" style={{ display: "block", letterSpacing: -0.5, fontSize: "1.3em" }}>Inbox</T>
+          <T size={13} color="#6B7280" style={{ marginTop: 2 }}>Connect your dedicated Gmail to start syncing vendor email.</T>
+        </div>
+
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          <div style={{ background: "#2C3E6B", borderLeft: "5px solid #4ADE80", padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, borderRadius: "12px 12px 0 0" }}>
+            <span style={{ fontSize: "0.72em", fontWeight: 700, color: "white", textTransform: "uppercase", letterSpacing: 0.7 }}>Connect a dedicated vendor inbox</span>
+          </div>
+          <div style={{ padding: "20px 18px" }}>
+            <div style={{ marginBottom: 16, color: "#374151", fontSize: "0.92em", lineHeight: 1.55 }}>
+              Connect <strong>imports@shopatgrace.com</strong> and AliDeskPro will:
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 20, color: "#374151", fontSize: "0.88em", lineHeight: 1.7, marginBottom: 18 }}>
+              <li>Auto-attach incoming emails to the right vendor by matching sender address</li>
+              <li>Auto-link emails that mention an order ref (e.g. <code style={{background:"#F1F5F9",padding:"1px 5px",borderRadius:4}}>SL-2026-006</code>) to that order</li>
+              <li>Surface promised dates as one-click follow-up tasks</li>
+              <li>Keep your personal email private — only the dedicated address syncs</li>
+            </ul>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={onConnect} style={{ background: "#2C3E6B", color: "white", border: "none", borderRadius: 8, padding: "10px 18px", fontSize: "0.88em", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                Connect Gmail
+              </button>
+              <span style={{ fontSize: "0.78em", color: "#6B7280" }}>OAuth — opens in popup, takes 15 seconds</span>
+            </div>
+          </div>
+        </div>
+
+        {totalContacts > 0 && missingEmails > 0 && (
+          <div style={{ background: "#FFFBEB", borderRadius: 12, border: "1px solid #FDE68A", padding: "12px 16px" }}>
+            <div style={{ fontSize: "0.78em", color: "#92400E", fontWeight: 600 }}>
+              ⚡ Heads up — {missingEmails} of {totalContacts} contacts have no email. Mail from those contacts will land in <strong>Unmatched</strong>.
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Detail view (a thread is selected)
+  if (selectedThread) {
+    const last = selectedThread.messages[selectedThread.messages.length - 1];
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+          <button onClick={() => setSelectedThread(null)} style={{ background: "transparent", border: "1px solid #E2E8F0", borderRadius: 6, padding: "5px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#374151" }}>← Inbox</button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: "0.92em", fontWeight: 700, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{last.subject}</div>
+            <div style={{ fontSize: "0.72em", color: "#6B7280" }}>
+              {selectedThread.company?.name || "Unmatched vendor"} · {selectedThread.messages.length} message{selectedThread.messages.length===1?"":"s"}
+            </div>
+          </div>
+        </div>
+
+        {/* Smart actions if we detected order refs */}
+        {(() => {
+          const refs = [...new Set(selectedThread.messages.flatMap(m => m.detected_order_refs || []))];
+          if (refs.length === 0) return null;
+          return (
+            <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "10px 14px" }}>
+              <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#92400E", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>⚡ Linked orders detected</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {refs.map(ref => (
+                  <span key={ref} style={{ background: "white", border: "1px solid #FCD34D", color: "#92400E", borderRadius: 99, padding: "3px 10px", fontFamily: "monospace", fontSize: "0.75em", fontWeight: 700 }}>🔗 {ref}</span>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Messages */}
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          {selectedThread.messages.map((m, i) => (
+            <div key={m.id} style={{ padding: "14px 16px", borderBottom: i < selectedThread.messages.length - 1 ? "2px solid #F1F5F9" : "none", background: m.direction === "outbound" ? "#F8FAFC" : "white" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8, gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <span style={{ width: 28, height: 28, background: m.direction === "outbound" ? "#DBEAFE" : "#FEE2E2", color: m.direction === "outbound" ? "#1E40AF" : "#DC2626", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "0.72em", flexShrink: 0 }}>
+                    {(m.from_name || m.from_email || "?").split(" ").slice(0,2).map(s => s[0]).join("").toUpperCase().slice(0,2)}
+                  </span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: "0.82em", fontWeight: 700, color: "#111827" }}>
+                      {m.direction === "outbound" ? "You" : (m.from_name || m.from_email)}
+                    </div>
+                    <div style={{ fontSize: "0.68em", color: "#6B7280", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {m.from_email} → {(m.to_emails || []).join(", ")}
+                    </div>
+                  </div>
+                </div>
+                <span style={{ fontSize: "0.7em", color: "#9CA3AF", whiteSpace: "nowrap" }}>{fmtDateTime(m.received_at)}</span>
+              </div>
+              <div style={{ fontSize: "0.85em", color: "#111827", lineHeight: 1.55, paddingLeft: 38, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {m.body_text || "(no content)"}
+              </div>
+              {m.has_attachments && m.attachment_meta && m.attachment_meta.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, paddingLeft: 38 }}>
+                  {m.attachment_meta.map((a, j) => (
+                    <span key={j} style={{ background: "#F1F5F9", color: "#374151", padding: "3px 9px", borderRadius: 5, fontSize: "0.72em", fontWeight: 600 }}>
+                      📎 {a.filename} ({Math.round((a.size||0)/1024)}KB)
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Reply composer */}
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "14px 16px" }}>
+          <div style={{ fontSize: "0.65em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Reply</div>
+          <textarea
+            value={replyText}
+            onChange={e => setReplyText(e.target.value)}
+            placeholder="Type your reply..."
+            style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", minHeight: 100, color: "#111827", boxSizing: "border-box", resize: "vertical" }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10, gap: 6 }}>
+            <button onClick={() => setReplyText("")} disabled={sending || !replyText} style={{ background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 6, padding: "7px 14px", fontSize: "0.78em", fontWeight: 600, cursor: replyText ? "pointer" : "not-allowed", fontFamily: "inherit" }}>Clear</button>
+            <button onClick={onSendReply} disabled={sending || !replyText.trim()} style={{ background: sending || !replyText.trim() ? "#9CA3AF" : "#2C3E6B", color: "white", border: "none", borderRadius: 6, padding: "7px 18px", fontSize: "0.82em", fontWeight: 700, cursor: sending || !replyText.trim() ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{sending ? "Sending..." : "Send →"}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Inbox list view
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* Header */}
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 0 }}>
+          <T size={22} weight={700} color="#2C3E6B" style={{ display: "block", letterSpacing: -0.5, fontSize: "1.3em" }}>Inbox</T>
+          <T size={13} color="#6B7280" style={{ marginTop: 2 }}>
+            Connected as <span style={{ fontWeight: 700, color: "#3730A3" }}>{status.email}</span>
+            {status.lastSyncedAt && <> · last synced {fmtRelative(status.lastSyncedAt)}</>}
+          </T>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={onSync} disabled={syncing} style={{ background: syncing ? "#9CA3AF" : "#2C3E6B", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: "0.82em", fontWeight: 700, cursor: syncing ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{syncing ? "Syncing..." : "Sync Now"}</button>
+          <button onClick={onDisconnect} style={{ background: "white", color: "#6B7280", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Disconnect</button>
+        </div>
+      </div>
+
+      {/* Sync result banner */}
+      {syncResult && (
+        <div style={{ background: syncResult.error ? "#FEF2F2" : "#F0FDF4", border: `1px solid ${syncResult.error ? "#FCA5A5" : "#86EFAC"}`, borderRadius: 10, padding: "10px 14px", fontSize: "0.82em", color: syncResult.error ? "#991B1B" : "#15803D" }}>
+          {syncResult.error ? `❌ ${syncResult.error}` : `✓ Synced — ${syncResult.processed} message${syncResult.processed===1?"":"s"}, ${syncResult.matched} matched to vendors${syncResult.skipped ? `, ${syncResult.skipped} skipped` : ""}`}
+        </div>
+      )}
+
+      {/* Filter chips */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {[
+          { id: "all", label: `All (${messages.length})` },
+          { id: "unread", label: `Unread (${unreadTotal})` },
+          { id: "unmatched", label: `Unmatched (${unmatchedTotal})` },
+        ].map(f => (
+          <button key={f.id} onClick={() => setFilter(f.id)} style={{ background: filter === f.id ? "#1F2937" : "white", color: filter === f.id ? "white" : "#1F2937", border: "1px solid " + (filter === f.id ? "#1F2937" : "#E2E8F0"), borderRadius: 99, padding: "5px 12px", fontSize: "0.75em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{f.label}</button>
+        ))}
+      </div>
+
+      {/* Threads list */}
+      {loadingMessages ? (
+        <div style={{ padding: 40, textAlign: "center", color: "#6B7280", fontSize: "0.85em" }}>Loading messages...</div>
+      ) : threads.length === 0 ? (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", textAlign: "center", padding: "60px 20px", color: "#6B7280", fontSize: "0.9em" }}>
+          {messages.length === 0 ? "No messages yet — click Sync Now to fetch from Gmail." : "No messages match this filter."}
+        </div>
+      ) : (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+          {threads.map((t, i) => {
+            const isLast = i === threads.length - 1;
+            const orderRefs = [...new Set(t.messages.flatMap(m => m.detected_order_refs || []))];
+            return (
+              <div key={t.threadId} onClick={() => setSelectedThread(t)} style={{ display: "grid", gridTemplateColumns: "8px 1fr auto auto 14px", gap: 10, padding: "12px 16px", alignItems: "center", borderBottom: isLast ? "none" : "2px solid #F1F5F9", cursor: "pointer", background: t.waiting ? "#FAFBFF" : "white" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.waiting ? "#3B82F6" : "transparent" }} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+                    <span style={{ color: "#111827", fontSize: "0.82em", fontWeight: t.waiting ? 700 : 600 }}>
+                      {t.last.direction === "outbound" ? `You → ${(t.last.to_emails||[])[0] || "?"}` : (t.last.from_name || t.last.from_email)}
+                    </span>
+                    <span style={{ color: "#6B7280", fontSize: "0.7em" }}>·</span>
+                    <span style={{ color: "#2C3E6B", fontSize: "0.7em", fontWeight: 600 }}>{t.company?.name || "Unmatched"}</span>
+                    {orderRefs.length > 0 && orderRefs.slice(0,1).map(ref => (
+                      <span key={ref} style={{ background: "#FEE2E2", color: "#DC2626", fontSize: "0.6em", fontWeight: 700, padding: "2px 6px", borderRadius: 99, fontFamily: "monospace" }}>🔗 {ref}</span>
+                    ))}
+                  </div>
+                  <div style={{ color: "#111827", fontSize: "0.82em", fontWeight: 600, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.last.subject}</div>
+                  <div style={{ fontSize: "0.7em", color: "#6B7280", lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {(t.last.body_text || "").slice(0, 120)}
+                  </div>
+                </div>
+                <span style={{ fontSize: "0.7em", color: "#9CA3AF", whiteSpace: "nowrap" }}>{fmtRelative(t.last.received_at)}</span>
+                {t.unreadCount > 0 ? (
+                  <span style={{ fontSize: "0.68em", fontWeight: 700, color: "#DC2626" }}>{t.unreadCount}</span>
+                ) : t.messages.length > 1 ? (
+                  <span style={{ fontSize: "0.68em", color: "#9CA3AF" }}>{t.messages.length}</span>
+                ) : <span />}
+                <span style={{ color: "#9CA3AF", fontSize: "0.85em" }}>›</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Date helpers used by Inbox
+function fmtRelative(iso) {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
 function TasksView({ companies, onUpdateCompany, onGoToCompany }) {
   const [menuOpen, setMenuOpen] = useState(null);
   const [showDone, setShowDone] = useState(false);
@@ -2651,9 +3056,11 @@ function IconTracking({color,size}){return <svg width={size||28} height={size||2
 function IconOrders({color,size}){return <svg width={size||28} height={size||28} viewBox="0 0 24 24" fill="none" stroke={color||"currentColor"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>;}
 function IconPricing({color,size}){return <svg width={size||28} height={size||28} viewBox="0 0 24 24" fill="none" stroke={color||"currentColor"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>;}
 function IconTasks({color,size}){return <svg width={size||28} height={size||28} viewBox="0 0 24 24" fill="none" stroke={color||"currentColor"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 11l3 3 5-6"/></svg>;}
-const NAV_ICONS = {dashboard:IconHome,ideas:IconIdeas,companies:IconVendors,budget:IconBudget,orders:IconOrders,research:IconResearch,tracking:IconTracking,pricing:IconPricing,tasks:IconTasks};
+function IconInbox({color,size}){return <svg width={size||28} height={size||28} viewBox="0 0 24 24" fill="none" stroke={color||"currentColor"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9l9 6 9-6"/></svg>;}
+const NAV_ICONS = {dashboard:IconHome,inbox:IconInbox,ideas:IconIdeas,companies:IconVendors,budget:IconBudget,orders:IconOrders,research:IconResearch,tracking:IconTracking,pricing:IconPricing,tasks:IconTasks};
 const NAV = [
   { id: "dashboard", label: "Home" },
+  { id: "inbox",     label: "Inbox" },
   { id: "companies", label: "Vendors" },
   { id: "tasks",     label: "Tasks" },
   { id: "research",  label: "Lookbooks" },
@@ -3147,6 +3554,7 @@ function App() {
       {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
       {nav==="pricing"&&<PricingTool />}
       {nav==="tasks"&&<TasksView companies={companies} onUpdateCompany={updateCompany} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
+      {nav==="inbox"&&<InboxView companies={companies} />}
       {nav==="contacts"&&<ContactsCRM companies={companies} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
       {nav==="budget"&&<Budget budgets={budgets} onUpdate={b=>setBudgets(bs=>bs.map(x=>x.id===b.id?b:x))} onAdd={b=>setBudgets(bs=>[...bs,b])} onDelete={id=>setBudgets(bs=>bs.filter(b=>b.id!==id))} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
       {nav==="research"&&<ResearchBoard items={researchItems} setItems={setResearchItems} companies={companies} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
@@ -3240,6 +3648,7 @@ function App() {
           {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
           {nav==="pricing"&&<PricingTool />}
           {nav==="tasks"&&<TasksView companies={companies} onUpdateCompany={updateCompany} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
+          {nav==="inbox"&&<InboxView companies={companies} />}
           {nav==="contacts"&&<ContactsCRM companies={companies} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
           {nav==="budget"&&<Budget budgets={budgets} onUpdate={b=>setBudgets(bs=>bs.map(x=>x.id===b.id?b:x))} onAdd={b=>setBudgets(bs=>[...bs,b])} onDelete={id=>setBudgets(bs=>bs.filter(b=>b.id!==id))} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
           {nav==="research"&&<ResearchBoard items={researchItems} setItems={setResearchItems} companies={companies} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}

@@ -1,0 +1,9 @@
+{
+  "name": "alideskpro-functions",
+  "version": "1.0.0",
+  "description": "Netlify Functions backend for AliDeskPro",
+  "private": true,
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}
