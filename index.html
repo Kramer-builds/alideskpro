@@ -537,7 +537,10 @@ function InboxView({ companies }) {
           body: JSON.stringify({ maxMessages: 25 }),
         });
         if (r.ok) {
-          if (!cancelled) await loadMessages();
+          if (!cancelled) {
+            await loadMessages();
+            await loadStatus();
+          }
         }
       } catch (e) {
         // Silent fail — will retry next interval. Don't disturb the UI.
@@ -598,6 +601,7 @@ function InboxView({ companies }) {
       if (!r.ok) throw new Error(data.error || "Sync failed");
       setSyncResult(data);
       await loadMessages();
+      await loadStatus();
     } catch (e) {
       setSyncResult({ error: e.message });
     }
