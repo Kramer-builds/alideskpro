@@ -522,6 +522,35 @@ function InboxView({ companies }) {
     loadMessages();
   }, []);
 
+  // Auto-sync: fires once when Inbox opens (if connected) and every 60 seconds while open.
+  // Silent — no banner shown, no button state change. Just freshens messages in the background.
+  // Skips if a manual sync is in flight to avoid stomping.
+  useEffect(() => {
+    if (!status.connected) return;
+    let cancelled = false;
+    const silentSync = async () => {
+      if (cancelled || syncing) return;
+      try {
+        const r = await fetch("/.netlify/functions/gmail-sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ maxMessages: 25 }),
+        });
+        if (r.ok) {
+          if (!cancelled) await loadMessages();
+        }
+      } catch (e) {
+        // Silent fail — will retry next interval. Don't disturb the UI.
+        console.warn("silent sync failed:", e.message);
+      }
+    };
+    // Fire once immediately when Inbox opens
+    silentSync();
+    // Then every 60 seconds
+    const id = setInterval(silentSync, 60_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [status.connected]);
+
   // Listen for the OAuth popup posting back its success message.
   useEffect(() => {
     const handler = (e) => {

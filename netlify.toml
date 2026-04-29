@@ -15,6 +15,11 @@
   # Functions can use external dependencies declared in package.json
   external_node_modules = ["googleapis"]
 
+# Scheduled function: pulls Gmail every 5 minutes regardless of browser state.
+# Cron expression: */5 * * * *  =  every 5 minutes
+[functions."gmail-sync-scheduled"]
+  schedule = "*/5 * * * *"
+
 # Default headers for static files
 [[headers]]
   for = "/*"
