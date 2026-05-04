@@ -478,7 +478,7 @@ function InboxView({ companies }) {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   // Filter
-  const [filter, setFilter] = useState("all"); // 'all' | 'unread' | 'unmatched'
+  const [filter, setFilter] = useState("all"); // 'all' | 'unread' | 'unmatched' | 'sent' | 'archived'
   // Reply composer
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
@@ -641,9 +641,14 @@ function InboxView({ companies }) {
   };
 
   // ---- Group messages by thread ----
+  // Default view (and most filters) hide archived threads. The "archived" filter shows only archived.
   const filtered = messages.filter(m => {
+    const isArchived = !!m.archived_at;
+    if (filter === "archived") return isArchived;
+    if (isArchived) return false; // hide archived from all other views
     if (filter === "unread") return !m.is_read && m.direction === "inbound";
     if (filter === "unmatched") return !m.company_id;
+    if (filter === "sent") return m.direction === "outbound";
     return true;
   });
   const threads = (() => {
@@ -668,8 +673,11 @@ function InboxView({ companies }) {
     }).sort((a, b) => (b.last.received_at || "").localeCompare(a.last.received_at || ""));
   })();
 
-  const unreadTotal = messages.filter(m => !m.is_read && m.direction === "inbound").length;
-  const unmatchedTotal = messages.filter(m => !m.company_id).length;
+  const activeMessages = messages.filter(m => !m.archived_at);
+  const unreadTotal = activeMessages.filter(m => !m.is_read && m.direction === "inbound").length;
+  const unmatchedTotal = activeMessages.filter(m => !m.company_id).length;
+  const sentTotal = activeMessages.filter(m => m.direction === "outbound").length;
+  const archivedTotal = messages.filter(m => !!m.archived_at).length;
 
   // ---- Render ----
   if (status.loading) {
@@ -719,9 +727,33 @@ function InboxView({ companies }) {
     );
   }
 
+  // Archive/unarchive a whole thread (all its messages get archived_at set/cleared in Supabase)
+  const onToggleArchive = async (thread) => {
+    if (!thread) return;
+    const isArchived = thread.messages.some(m => !!m.archived_at);
+    const newVal = isArchived ? null : new Date().toISOString();
+    const ids = thread.messages.map(m => m.id).filter(Boolean);
+    if (ids.length === 0) return;
+    try {
+      const url = SB_URL + "/rest/v1/ali4_messages?id=in.(" + ids.join(",") + ")";
+      const r = await fetch(url, {
+        method: "PATCH",
+        headers: { "apikey": SB_KEY, "Authorization": "Bearer " + SB_KEY, "Content-Type": "application/json", "Prefer": "return=minimal" },
+        body: JSON.stringify({ archived_at: newVal }),
+      });
+      if (!r.ok) throw new Error("Archive failed: " + r.status);
+      // Reload then close detail view if archiving (so user returns to inbox cleanly)
+      await loadMessages();
+      if (!isArchived) setSelectedThread(null);
+    } catch (e) {
+      alert("Archive failed: " + e.message);
+    }
+  };
+
   // Detail view (a thread is selected)
   if (selectedThread) {
     const last = selectedThread.messages[selectedThread.messages.length - 1];
+    const threadIsArchived = selectedThread.messages.some(m => !!m.archived_at);
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
@@ -730,8 +762,10 @@ function InboxView({ companies }) {
             <div style={{ fontSize: "0.92em", fontWeight: 700, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{last.subject}</div>
             <div style={{ fontSize: "0.72em", color: "#6B7280" }}>
               {selectedThread.company?.name || "Unmatched vendor"} · {selectedThread.messages.length} message{selectedThread.messages.length===1?"":"s"}
+              {threadIsArchived && <span style={{ marginLeft: 8, background: "#F1F5F9", color: "#6B7280", padding: "1px 7px", borderRadius: 99, fontSize: "0.85em", fontWeight: 600 }}>Archived</span>}
             </div>
           </div>
+          <button onClick={() => onToggleArchive(selectedThread)} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 6, padding: "5px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#374151" }}>{threadIsArchived ? "Unarchive" : "Archive"}</button>
         </div>
 
         {/* Smart actions if we detected order refs */}
@@ -833,9 +867,11 @@ function InboxView({ companies }) {
       {/* Filter chips */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         {[
-          { id: "all", label: `All (${messages.length})` },
+          { id: "all", label: `All (${activeMessages.length})` },
           { id: "unread", label: `Unread (${unreadTotal})` },
+          { id: "sent", label: `Sent (${sentTotal})` },
           { id: "unmatched", label: `Unmatched (${unmatchedTotal})` },
+          { id: "archived", label: `Archived (${archivedTotal})` },
         ].map(f => (
           <button key={f.id} onClick={() => setFilter(f.id)} style={{ background: filter === f.id ? "#1F2937" : "white", color: filter === f.id ? "white" : "#1F2937", border: "1px solid " + (filter === f.id ? "#1F2937" : "#E2E8F0"), borderRadius: 99, padding: "5px 12px", fontSize: "0.75em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{f.label}</button>
         ))}
