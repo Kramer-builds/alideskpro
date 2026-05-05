@@ -466,7 +466,7 @@ function Dashboard({ companies, budgets, onGo }) {
 }
 
 // Tasks View
-function InboxView({ companies }) {
+function InboxView({ companies, onCreateVendorFromEmail }) {
   // Connection state (loaded from /gmail-status)
   const [status, setStatus] = useState({ loading: true });
   // Messages list (loaded from ali4_messages)
@@ -656,13 +656,16 @@ function InboxView({ companies }) {
   };
 
   // ---- Group messages by thread ----
+  // A message from the connected mailbox itself is NOT considered "unmatched" — it's just a self-test or self-cc.
+  const connectedEmailLc = (status.email || "").toLowerCase();
+  const isSelfSender = (m) => connectedEmailLc && m.from_email && m.from_email.toLowerCase() === connectedEmailLc;
   // Default view (and most filters) hide archived threads. The "archived" filter shows only archived.
   const filtered = messages.filter(m => {
     const isArchived = !!m.archived_at;
     if (filter === "archived") return isArchived;
     if (isArchived) return false; // hide archived from all other views
     if (filter === "unread") return !m.is_read && m.direction === "inbound";
-    if (filter === "unmatched") return !m.company_id;
+    if (filter === "unmatched") return !m.company_id && !isSelfSender(m);
     if (filter === "sent") return m.direction === "outbound";
     return true;
   });
@@ -690,7 +693,7 @@ function InboxView({ companies }) {
 
   const activeMessages = messages.filter(m => !m.archived_at);
   const unreadTotal = activeMessages.filter(m => !m.is_read && m.direction === "inbound").length;
-  const unmatchedTotal = activeMessages.filter(m => !m.company_id).length;
+  const unmatchedTotal = activeMessages.filter(m => !m.company_id && !isSelfSender(m)).length;
   const sentTotal = activeMessages.filter(m => m.direction === "outbound").length;
   const archivedTotal = messages.filter(m => !!m.archived_at).length;
 
@@ -860,11 +863,15 @@ function InboxView({ companies }) {
           <button onClick={() => onToggleArchive(selectedThread)} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 6, padding: "5px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#374151" }}>{threadIsArchived ? "Unarchive" : "Archive"}</button>
         </div>
 
-        {/* Unmatched banner — show 3-action trio if the thread isn't tied to a vendor */}
+        {/* Unmatched banner — show 3-action trio if the thread isn't tied to a vendor.
+            Skipped when the sender is the connected mailbox itself (e.g., self-test email). */}
         {!selectedThread.company && (() => {
           const lastInbound = [...selectedThread.messages].reverse().find(m => m.direction === "inbound") || selectedThread.messages[0];
           const senderEmail = lastInbound?.from_email;
           if (!senderEmail) return null;
+          // If this is the connected mailbox emailing itself, treat it as a self-test, not a vendor candidate.
+          const connectedEmail = (status.email || "").toLowerCase();
+          if (connectedEmail && senderEmail.toLowerCase() === connectedEmail) return null;
           const sortedVendors = [...companies].sort((a,b) => a.name.localeCompare(b.name));
           return (
             <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 10, padding: "10px 14px" }}>
@@ -893,7 +900,12 @@ function InboxView({ companies }) {
                     </div>
                   )}
                 </div>
-                <button onClick={() => alert("To create a new vendor, click Vendors in the left nav and use + Add Company. We'll wire up direct creation here in a future update.")} style={{ background: "white", border: "1px solid #93C5FD", color: "#1E40AF", borderRadius: 6, padding: "6px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                <button onClick={() => {
+                  const lastInbound = [...selectedThread.messages].reverse().find(m => m.direction === "inbound") || selectedThread.messages[0];
+                  if (onCreateVendorFromEmail && lastInbound && lastInbound.from_email) {
+                    onCreateVendorFromEmail(lastInbound.from_email, lastInbound.from_name);
+                  }
+                }} style={{ background: "white", border: "1px solid #93C5FD", color: "#1E40AF", borderRadius: 6, padding: "6px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
                   + Create new vendor
                 </button>
                 <button onClick={() => onIgnoreSender(selectedThread)} style={{ background: "white", border: "1px solid #E2E8F0", color: "#6B7280", borderRadius: 6, padding: "6px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
@@ -3970,6 +3982,11 @@ function App() {
   const [showImport,setShowImport]=useState(false);
   const [dashFilter,setDashFilter]=useState(null);
   const [showExport,setShowExport]=useState(false);
+  // When the user clicks "+ Create new vendor" from an Unmatched email banner, we stash the
+  // sender's info here. After AddCompanyModal saves, we auto-assign that sender's existing
+  // messages to the newly-created vendor and add them as a contact.
+  const [pendingVendorAssignment,setPendingVendorAssignment]=useState(null);
+  // { fromEmail, fromName }
 
   useEffect(()=>{
     const seed=mkSeed();
@@ -4047,7 +4064,7 @@ function App() {
       {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
       {nav==="pricing"&&<PricingTool />}
       {nav==="tasks"&&<TasksView companies={companies} onUpdateCompany={updateCompany} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
-      {nav==="inbox"&&<InboxView companies={companies} />}
+      {nav==="inbox"&&<InboxView companies={companies} onCreateVendorFromEmail={(fromEmail, fromName) => { setPendingVendorAssignment({ fromEmail, fromName }); setAddCompanyModal(true); }} />}
       {nav==="contacts"&&<ContactsCRM companies={companies} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
       {nav==="budget"&&<Budget budgets={budgets} onUpdate={b=>setBudgets(bs=>bs.map(x=>x.id===b.id?b:x))} onAdd={b=>setBudgets(bs=>[...bs,b])} onDelete={id=>setBudgets(bs=>bs.filter(b=>b.id!==id))} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
       {nav==="research"&&<ResearchBoard items={researchItems} setItems={setResearchItems} companies={companies} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
@@ -4141,7 +4158,7 @@ function App() {
           {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
           {nav==="pricing"&&<PricingTool />}
           {nav==="tasks"&&<TasksView companies={companies} onUpdateCompany={updateCompany} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
-          {nav==="inbox"&&<InboxView companies={companies} />}
+          {nav==="inbox"&&<InboxView companies={companies} onCreateVendorFromEmail={(fromEmail, fromName) => { setPendingVendorAssignment({ fromEmail, fromName }); setAddCompanyModal(true); }} />}
           {nav==="contacts"&&<ContactsCRM companies={companies} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
           {nav==="budget"&&<Budget budgets={budgets} onUpdate={b=>setBudgets(bs=>bs.map(x=>x.id===b.id?b:x))} onAdd={b=>setBudgets(bs=>[...bs,b])} onDelete={id=>setBudgets(bs=>bs.filter(b=>b.id!==id))} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
           {nav==="research"&&<ResearchBoard items={researchItems} setItems={setResearchItems} companies={companies} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
@@ -4149,7 +4166,53 @@ function App() {
       </div>
 
       {showImport&&<ImportVendorsModal onImport={(vs)=>{vs.forEach(v=>setCompanies(cs=>[...cs,v]));setShowImport(false);}} onClose={()=>setShowImport(false)} allCategories={categories} />}
-      {addCompanyModal&&<AddCompanyModal onAdd={c=>{addCompany(c);setAddCompanyModal(false);setNav("companies");}} allCategories={categories} onClose={()=>setAddCompanyModal(false)} />}
+      {addCompanyModal&&<AddCompanyModal onAdd={async c=>{
+        // If a pending-vendor-assignment is queued (user came from Unmatched email banner),
+        // we want to add the orphan sender as a contact on the new vendor BEFORE saving,
+        // and after save, reassign those orphan messages.
+        const pending = pendingVendorAssignment;
+        let companyToAdd = c;
+        if (pending && pending.fromEmail) {
+          // Pre-populate this new vendor with the orphan sender as their first contact.
+          companyToAdd = {
+            ...c,
+            contacts: [
+              {
+                id: "ct_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                name: pending.fromName || pending.fromEmail.split("@")[0],
+                email: pending.fromEmail,
+                role: "",
+                phone: "",
+              },
+              ...(c.contacts || []),
+            ],
+          };
+        }
+        addCompany(companyToAdd);
+        // Then, if pending, fire the message-update endpoint to retroactively reassign
+        // existing messages from that sender to this new vendor.
+        if (pending && pending.fromEmail) {
+          try {
+            await fetch("/.netlify/functions/message-update", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "assignVendor",
+                fromEmail: pending.fromEmail,
+                fromName: pending.fromName,
+                companyId: companyToAdd.id,
+              }),
+            });
+          } catch (e) {
+            // Non-fatal — vendor exists, messages just stay orphan until manual reassign.
+            console.warn("Auto-reassign after vendor creation failed:", e.message);
+          }
+          setPendingVendorAssignment(null);
+        }
+        setAddCompanyModal(false);
+        // Don't navigate away from inbox if user came from there
+        if (!pending) setNav("companies");
+      }} allCategories={categories} onClose={()=>{setAddCompanyModal(false);setPendingVendorAssignment(null);}} />}
 
       {showExport&&(
         <div style={{ position:"fixed",inset:0,zIndex:200,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"flex-end",justifyContent:"center" }} onClick={e=>e.target===e.currentTarget&&setShowExport(false)}>
