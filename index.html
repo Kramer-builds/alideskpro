@@ -485,6 +485,10 @@ function InboxView({ companies }) {
   // Compose modal (new email)
   const [composeOpen, setComposeOpen] = useState(false);
   const [composePrefill, setComposePrefill] = useState(null); // { mode, subject, body, ... }
+  // Reassignment state for Unmatched threads — must be at top so hook order is consistent.
+  const [reassignThread, setReassignThread] = useState(null);
+  const [reassignPickerOpen, setReassignPickerOpen] = useState(false);
+  const [reassignSearch, setReassignSearch] = useState("");
 
   const totalContactsWithEmail = companies.reduce((n, c) => n + (c.contacts || []).filter(ct => ct.email && ct.email.trim()).length, 0);
   const totalContacts = companies.reduce((n, c) => n + (c.contacts || []).length, 0);
@@ -566,6 +570,16 @@ function InboxView({ companies }) {
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, []);
+
+  // Close the Unmatched-reassign picker when clicking outside it.
+  // MUST be at component top with other hooks — early returns below would otherwise
+  // make this conditional, violating the rules of hooks.
+  useEffect(() => {
+    if (!reassignPickerOpen) return;
+    const onDoc = (e) => { if (!e.target.closest("[data-reassign-picker]")) setReassignPickerOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [reassignPickerOpen]);
 
   // ---- Actions ----
   const onConnect = () => {
@@ -750,19 +764,6 @@ function InboxView({ companies }) {
       alert("Archive failed: " + e.message);
     }
   };
-
-  // Reassignment state: which Unmatched thread is having its picker open
-  const [reassignThread, setReassignThread] = useState(null);
-  const [reassignPickerOpen, setReassignPickerOpen] = useState(false);
-  const [reassignSearch, setReassignSearch] = useState("");
-
-  // Close reassign picker on outside click
-  useEffect(() => {
-    if (!reassignPickerOpen) return;
-    const onDoc = (e) => { if (!e.target.closest("[data-reassign-picker]")) setReassignPickerOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [reassignPickerOpen]);
 
   // Assign an Unmatched thread to an existing vendor.
   // Calls message-update with action=assignVendor; backend updates messages and adds the
