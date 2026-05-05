@@ -78,6 +78,17 @@ export const handler = async (event) => {
     const companiesBlob = await loadStoreKey("companies");
     const companies = Array.isArray(companiesBlob) ? companiesBlob : [];
 
+    // Load the ignored-senders list. Messages from these addresses get auto-archived on sync
+    // so they never clutter the Unmatched view.
+    let ignoredSet = new Set();
+    try {
+      const igRows = await sbGet("ali4_ignored_senders", "?select=email");
+      ignoredSet = new Set((igRows || []).map(r => String(r.email).toLowerCase()));
+    } catch (e) {
+      // Table may not exist yet on first deploy. Non-fatal.
+      console.warn("ignored_senders table not available:", e.message);
+    }
+
     // Build a flat lookup: lowercase email → { companyId, contactId }
     const emailIndex = new Map();
     const domainIndex = new Map();
@@ -136,6 +147,10 @@ export const handler = async (event) => {
         const { textBody, htmlBody, hasAttachments, attachmentMeta } = extractContent(detail.payload);
         const orderRefs = detectOrderRefs(subject + " " + textBody);
 
+        // If this sender is on the ignored list, mark the message archived so it doesn't
+        // show up in Unmatched / All views. The data still gets stored — just hidden.
+        const isIgnored = fromEmail && ignoredSet.has(String(fromEmail).toLowerCase());
+
         // Upsert into ali4_messages — gmail_message_id is unique so re-runs are safe.
         await sbUpsert(
           "ali4_messages",
@@ -158,6 +173,7 @@ export const handler = async (event) => {
             attachment_meta: attachmentMeta.length > 0 ? attachmentMeta : null,
             detected_order_refs: orderRefs.length > 0 ? orderRefs : null,
             raw_headers: headers,
+            archived_at: isIgnored ? new Date().toISOString() : null,
           },
           "gmail_message_id",
         );

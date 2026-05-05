@@ -484,6 +484,7 @@ function InboxView({ companies }) {
   const [sending, setSending] = useState(false);
   // Compose modal (new email)
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composePrefill, setComposePrefill] = useState(null); // { mode, subject, body, ... }
 
   const totalContactsWithEmail = companies.reduce((n, c) => n + (c.contacts || []).filter(ct => ct.email && ct.email.trim()).length, 0);
   const totalContacts = companies.reduce((n, c) => n + (c.contacts || []).length, 0);
@@ -750,13 +751,102 @@ function InboxView({ companies }) {
     }
   };
 
+  // Reassignment state: which Unmatched thread is having its picker open
+  const [reassignThread, setReassignThread] = useState(null);
+  const [reassignPickerOpen, setReassignPickerOpen] = useState(false);
+  const [reassignSearch, setReassignSearch] = useState("");
+
+  // Close reassign picker on outside click
+  useEffect(() => {
+    if (!reassignPickerOpen) return;
+    const onDoc = (e) => { if (!e.target.closest("[data-reassign-picker]")) setReassignPickerOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [reassignPickerOpen]);
+
+  // Assign an Unmatched thread to an existing vendor.
+  // Calls message-update with action=assignVendor; backend updates messages and adds the
+  // sender as a new contact on the company.
+  const onAssignToVendor = async (thread, company) => {
+    if (!thread || !company) return;
+    const lastInbound = [...thread.messages].reverse().find(m => m.direction === "inbound") || thread.messages[0];
+    if (!lastInbound || !lastInbound.from_email) {
+      alert("Cannot assign — message has no sender email.");
+      return;
+    }
+    try {
+      const r = await fetch("/.netlify/functions/message-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "assignVendor",
+          fromEmail: lastInbound.from_email,
+          fromName: lastInbound.from_name,
+          companyId: company.id,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Assign failed");
+      await loadMessages();
+      setReassignThread(null);
+      setReassignPickerOpen(false);
+      setReassignSearch("");
+      // Also surface a confirmation. Note: refreshing companies blob is a bigger change handled by parent.
+      alert(`Assigned to ${company.name}.${data.contactAdded ? " Contact added." : ""} Reload page to see the new contact in vendor list.`);
+    } catch (e) {
+      alert("Assign failed: " + e.message);
+    }
+  };
+
+  // Mark sender as ignored — adds to ignore list and archives existing messages from them.
+  const onIgnoreSender = async (thread) => {
+    if (!thread) return;
+    const lastInbound = [...thread.messages].reverse().find(m => m.direction === "inbound") || thread.messages[0];
+    if (!lastInbound || !lastInbound.from_email) return;
+    if (!window.confirm(`Mark "${lastInbound.from_email}" as not a vendor? Future emails from this sender will be auto-archived.`)) return;
+    try {
+      const r = await fetch("/.netlify/functions/message-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "ignoreSender", fromEmail: lastInbound.from_email }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Ignore failed");
+      await loadMessages();
+      setSelectedThread(null);
+    } catch (e) {
+      alert("Ignore failed: " + e.message);
+    }
+  };
+
+  // Forward a thread — opens compose with subject/body prefilled.
+  const onForward = (thread) => {
+    if (!thread || !thread.messages || thread.messages.length === 0) return;
+    // Use the last (most recent) message as the source.
+    const last = thread.messages[thread.messages.length - 1];
+    const cleanedSubject = (last.subject || "").replace(/^(Fwd:|Re:)\s*/i, "");
+    const dateLabel = last.received_at ? new Date(last.received_at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) : "";
+    const fromLabel = last.from_name ? `${last.from_name} <${last.from_email}>` : (last.from_email || "");
+    const quotedBody = `\n\n\n---------- Forwarded message ----------\nFrom: ${fromLabel}\nDate: ${dateLabel}\nSubject: ${last.subject || "(no subject)"}\nTo: ${(last.to_emails || []).join(", ")}\n\n${last.body_text || ""}`;
+    setComposePrefill({
+      mode: "forward",
+      subject: `Fwd: ${cleanedSubject}`,
+      body: quotedBody,
+      to: "",
+      // Don't carry over vendor association — forwarded mail typically goes elsewhere.
+      companyId: "",
+      contactId: "",
+    });
+    setComposeOpen(true);
+  };
+
   // Detail view (a thread is selected)
   if (selectedThread) {
     const last = selectedThread.messages[selectedThread.messages.length - 1];
     const threadIsArchived = selectedThread.messages.some(m => !!m.archived_at);
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <button onClick={() => setSelectedThread(null)} style={{ background: "transparent", border: "1px solid #E2E8F0", borderRadius: 6, padding: "5px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#374151" }}>← Inbox</button>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: "0.92em", fontWeight: 700, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{last.subject}</div>
@@ -765,8 +855,53 @@ function InboxView({ companies }) {
               {threadIsArchived && <span style={{ marginLeft: 8, background: "#F1F5F9", color: "#6B7280", padding: "1px 7px", borderRadius: 99, fontSize: "0.85em", fontWeight: 600 }}>Archived</span>}
             </div>
           </div>
+          <button onClick={() => onForward(selectedThread)} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 6, padding: "5px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#374151" }}>Forward</button>
           <button onClick={() => onToggleArchive(selectedThread)} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 6, padding: "5px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", color: "#374151" }}>{threadIsArchived ? "Unarchive" : "Archive"}</button>
         </div>
+
+        {/* Unmatched banner — show 3-action trio if the thread isn't tied to a vendor */}
+        {!selectedThread.company && (() => {
+          const lastInbound = [...selectedThread.messages].reverse().find(m => m.direction === "inbound") || selectedThread.messages[0];
+          const senderEmail = lastInbound?.from_email;
+          if (!senderEmail) return null;
+          const sortedVendors = [...companies].sort((a,b) => a.name.localeCompare(b.name));
+          return (
+            <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 10, padding: "10px 14px" }}>
+              <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#1E40AF", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>📬 Unmatched sender — what is this?</div>
+              <div style={{ fontSize: "0.78em", color: "#374151", marginBottom: 8 }}>
+                <strong>{senderEmail}</strong> isn't linked to any vendor. Pick what to do:
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <div data-reassign-picker style={{ position: "relative" }}>
+                  <button onClick={() => setReassignPickerOpen(o => !o)} style={{ background: "white", border: "1px solid #93C5FD", color: "#1E40AF", borderRadius: 6, padding: "6px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                    → Assign to existing vendor
+                  </button>
+                  {reassignPickerOpen && (
+                    <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 40, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden", minWidth: 260, display: "flex", flexDirection: "column" }}>
+                      <input autoFocus placeholder="Search vendors..." value={reassignSearch} onChange={e=>setReassignSearch(e.target.value)} style={{ border: "none", borderBottom: "1px solid #E2E8F0", padding: "9px 12px", fontFamily: "inherit", fontSize: "0.82em", outline: "none", color: "#111827" }} />
+                      <div style={{ maxHeight: 240, overflowY: "auto" }}>
+                        {(() => {
+                          const q = reassignSearch.trim().toLowerCase();
+                          const filtered = q ? sortedVendors.filter(c=>c.name.toLowerCase().includes(q)) : sortedVendors;
+                          if (filtered.length === 0) return <div style={{ padding: "12px 14px", color: "#9CA3AF", fontSize: "0.78em", fontStyle: "italic", textAlign: "center" }}>No vendors match "{reassignSearch}"</div>;
+                          return filtered.map(c => (
+                            <button key={c.id} onClick={() => onAssignToVendor(selectedThread, c)} style={{ display: "block", width: "100%", padding: "8px 12px", background: "transparent", border: "none", borderTop: "1px solid #F1F5F9", textAlign: "left", cursor: "pointer", fontFamily: "inherit", fontSize: "0.82em", color: "#111827" }}>{c.name}</button>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button onClick={() => alert("To create a new vendor, click Vendors in the left nav and use + Add Company. We'll wire up direct creation here in a future update.")} style={{ background: "white", border: "1px solid #93C5FD", color: "#1E40AF", borderRadius: 6, padding: "6px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                  + Create new vendor
+                </button>
+                <button onClick={() => onIgnoreSender(selectedThread)} style={{ background: "white", border: "1px solid #E2E8F0", color: "#6B7280", borderRadius: 6, padding: "6px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                  Mark as not a vendor
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Smart actions if we detected order refs */}
         {(() => {
@@ -809,11 +944,34 @@ function InboxView({ companies }) {
               </div>
               {m.has_attachments && m.attachment_meta && m.attachment_meta.length > 0 && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, paddingLeft: 38 }}>
-                  {m.attachment_meta.map((a, j) => (
-                    <span key={j} style={{ background: "#F1F5F9", color: "#374151", padding: "3px 9px", borderRadius: 5, fontSize: "0.72em", fontWeight: 600 }}>
-                      📎 {a.filename} ({Math.round((a.size||0)/1024)}KB)
-                    </span>
-                  ))}
+                  {m.attachment_meta.map((a, j) => {
+                    // Outbound (no attachmentId) attachments aren't downloadable until next sync.
+                    const downloadable = !!a.attachmentId;
+                    const onDownload = () => {
+                      if (!downloadable) return;
+                      const url = `/.netlify/functions/gmail-attachment?messageId=${encodeURIComponent(m.gmail_message_id)}&attachmentId=${encodeURIComponent(a.attachmentId)}&filename=${encodeURIComponent(a.filename)}&mimeType=${encodeURIComponent(a.mimeType || "")}`;
+                      // Open in a new tab — browser handles the download via Content-Disposition header.
+                      window.open(url, "_blank");
+                    };
+                    return (
+                      <button
+                        key={j}
+                        onClick={onDownload}
+                        disabled={!downloadable}
+                        title={downloadable ? "Click to download" : "Will be downloadable after next sync"}
+                        style={{
+                          background: downloadable ? "#EEF2FF" : "#F1F5F9",
+                          color: downloadable ? "#3730A3" : "#9CA3AF",
+                          padding: "4px 10px", borderRadius: 5, fontSize: "0.72em", fontWeight: 600,
+                          border: "1px solid " + (downloadable ? "#C7D2FE" : "#E2E8F0"),
+                          cursor: downloadable ? "pointer" : "not-allowed",
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        📎 {a.filename} <span style={{ opacity: 0.7 }}>({Math.round((a.size||0)/1024)}KB)</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -851,7 +1009,7 @@ function InboxView({ companies }) {
           </T>
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <button onClick={() => setComposeOpen(true)} style={{ background: "white", color: "#2C3E6B", border: "1px solid #2C3E6B", borderRadius: 8, padding: "8px 14px", fontSize: "0.82em", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>+ New Email</button>
+          <button onClick={() => { setComposePrefill(null); setComposeOpen(true); }} style={{ background: "white", color: "#2C3E6B", border: "1px solid #2C3E6B", borderRadius: 8, padding: "8px 14px", fontSize: "0.82em", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>+ New Email</button>
           <button onClick={onSync} disabled={syncing} style={{ background: syncing ? "#9CA3AF" : "#2C3E6B", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: "0.82em", fontWeight: 700, cursor: syncing ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{syncing ? "Syncing..." : "Sync Now"}</button>
           <button onClick={onDisconnect} style={{ background: "white", color: "#6B7280", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: "0.78em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Disconnect</button>
         </div>
@@ -921,7 +1079,7 @@ function InboxView({ companies }) {
         </div>
       )}
 
-      {composeOpen && <ComposeModal companies={companies} onClose={() => setComposeOpen(false)} onSent={() => { setComposeOpen(false); loadMessages(); }} />}
+      {composeOpen && <ComposeModal companies={companies} prefill={composePrefill} onClose={() => { setComposeOpen(false); setComposePrefill(null); }} onSent={() => { setComposeOpen(false); setComposePrefill(null); loadMessages(); }} />}
     </div>
   );
 }
@@ -929,16 +1087,26 @@ function InboxView({ companies }) {
 // ComposeModal — opens when user clicks "+ New Email" on the Inbox page.
 // Lets user pick a vendor (with type-to-search), enter subject, write body,
 // and send via the gmail-send Netlify Function.
-function ComposeModal({ companies, onClose }) {
+function ComposeModal({ companies, onClose, prefill }) {
+  // prefill (optional) shape:
+  //   { mode: "forward" | "new", subject?, body?, to?, companyId?, contactId?, attachments? }
+  // Used when launching from a Forward action — pre-fills subject with "Fwd: ...", body with quoted original.
+
   const [vendorPickerOpen, setVendorPickerOpen] = useState(false);
   const [vendorSearch, setVendorSearch] = useState("");
-  const [companyId, setCompanyId] = useState("");
-  const [contactId, setContactId] = useState("");
-  const [to, setTo] = useState("");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [companyId, setCompanyId] = useState(prefill?.companyId || "");
+  const [contactId, setContactId] = useState(prefill?.contactId || "");
+  const [to, setTo] = useState(prefill?.to || "");
+  const [subject, setSubject] = useState(prefill?.subject || "");
+  const [body, setBody] = useState(prefill?.body || "");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // CC/BCC toggle — collapsed by default
+  const [showCcBcc, setShowCcBcc] = useState(false);
+  const [cc, setCc] = useState("");
+  const [bcc, setBcc] = useState("");
+  // Attachments (each: { filename, mimeType, size, data (base64) })
+  const [attachments, setAttachments] = useState([]);
 
   // Close popovers on outside click
   useEffect(() => {
@@ -957,7 +1125,6 @@ function ComposeModal({ companies, onClose }) {
     setContactId("");
     setVendorPickerOpen(false);
     setVendorSearch("");
-    // Default the To field to the first contact with email, or empty
     const firstWithEmail = (c.contacts || []).find(ct => ct.email && ct.email.trim());
     if (firstWithEmail) {
       setTo(firstWithEmail.email);
@@ -974,6 +1141,49 @@ function ComposeModal({ companies, onClose }) {
     setTo(ct.email);
   };
 
+  // Read a File object as base64 (data part only, no `data:` prefix).
+  const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // result is "data:mime/type;base64,XXXXX..."  — strip the prefix.
+      const result = reader.result;
+      const idx = result.indexOf("base64,");
+      resolve(idx >= 0 ? result.slice(idx + 7) : result);
+    };
+    reader.onerror = () => reject(new Error("Failed to read file: " + file.name));
+    reader.readAsDataURL(file);
+  });
+
+  const onAddFiles = async (e) => {
+    const files = [...(e.target.files || [])];
+    if (files.length === 0) return;
+    // 25MB total cap (Gmail's per-message limit). Calculate current + incoming.
+    const currentSize = attachments.reduce((s, a) => s + (a.size || 0), 0);
+    const incomingSize = files.reduce((s, f) => s + f.size, 0);
+    if (currentSize + incomingSize > 25 * 1024 * 1024) {
+      setError("Total attachment size exceeds 25MB (Gmail's limit). Remove some files.");
+      e.target.value = "";
+      return;
+    }
+    try {
+      const encoded = await Promise.all(files.map(async f => ({
+        filename: f.name,
+        mimeType: f.type || "application/octet-stream",
+        size: f.size,
+        data: await readFileAsBase64(f),
+      })));
+      setAttachments(prev => [...prev, ...encoded]);
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+    e.target.value = ""; // reset input so same file can be picked again later
+  };
+
+  const onRemoveAttachment = (idx) => {
+    setAttachments(prev => prev.filter((_, i) => i !== idx));
+  };
+
   const onSend = async () => {
     setError("");
     if (!to.trim()) { setError("Recipient email is required."); return; }
@@ -988,8 +1198,11 @@ function ComposeModal({ companies, onClose }) {
           to: to.trim(),
           subject: subject.trim(),
           body,
+          cc: cc.trim() || undefined,
+          bcc: bcc.trim() || undefined,
           companyId: companyId || null,
           contactId: contactId || null,
+          attachments: attachments.length > 0 ? attachments : undefined,
         }),
       });
       const data = await r.json();
@@ -1001,12 +1214,15 @@ function ComposeModal({ companies, onClose }) {
     setSending(false);
   };
 
+  const totalAttachmentSize = attachments.reduce((s, a) => s + (a.size || 0), 0);
+  const titleLabel = prefill?.mode === "forward" ? "Forward Email" : "New Email";
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div style={{ background: "white", borderRadius: 12, maxWidth: 640, width: "100%", maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 50px rgba(0,0,0,0.25)" }}>
         {/* Header */}
         <div style={{ background: "#2C3E6B", padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderRadius: "12px 12px 0 0" }}>
-          <span style={{ fontWeight: 700, color: "white", textTransform: "uppercase", letterSpacing: 0.7, fontSize: "0.78em" }}>New Email</span>
+          <span style={{ fontWeight: 700, color: "white", textTransform: "uppercase", letterSpacing: 0.7, fontSize: "0.78em" }}>{titleLabel}</span>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: "white", fontSize: "1.2em", cursor: "pointer", padding: 0, lineHeight: 1 }}>×</button>
         </div>
 
@@ -1053,9 +1269,28 @@ function ComposeModal({ companies, onClose }) {
 
           {/* To */}
           <div>
-            <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>To</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>To</div>
+              <button onClick={() => setShowCcBcc(s => !s)} style={{ background: "transparent", border: "none", color: "#3730A3", fontSize: "0.7em", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                {showCcBcc ? "− Hide Cc/Bcc" : "+ Cc/Bcc"}
+              </button>
+            </div>
             <input type="email" value={to} onChange={e=>setTo(e.target.value)} placeholder="recipient@example.com" style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", color: "#111827", boxSizing: "border-box" }} />
           </div>
+
+          {/* Cc/Bcc fields (toggle) */}
+          {showCcBcc && (
+            <>
+              <div>
+                <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Cc</div>
+                <input type="text" value={cc} onChange={e=>setCc(e.target.value)} placeholder="cc1@example.com, cc2@example.com" style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", color: "#111827", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Bcc</div>
+                <input type="text" value={bcc} onChange={e=>setBcc(e.target.value)} placeholder="bcc@example.com" style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", color: "#111827", boxSizing: "border-box" }} />
+              </div>
+            </>
+          )}
 
           {/* Subject */}
           <div>
@@ -1067,6 +1302,29 @@ function ComposeModal({ companies, onClose }) {
           <div>
             <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Message</div>
             <textarea value={body} onChange={e=>setBody(e.target.value)} placeholder="Type your message..." style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", minHeight: 180, color: "#111827", boxSizing: "border-box", resize: "vertical" }} />
+          </div>
+
+          {/* Attachments */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Attachments {attachments.length > 0 && `(${attachments.length} · ${(totalAttachmentSize/1024).toFixed(0)}KB)`}
+              </div>
+              <label style={{ background: "transparent", border: "1px solid #E2E8F0", borderRadius: 6, padding: "4px 10px", fontSize: "0.72em", fontWeight: 600, cursor: "pointer", color: "#374151", fontFamily: "inherit" }}>
+                📎 Add files
+                <input type="file" multiple onChange={onAddFiles} style={{ display: "none" }} />
+              </label>
+            </div>
+            {attachments.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {attachments.map((a, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#F1F5F9", borderRadius: 6, padding: "6px 10px", fontSize: "0.78em" }}>
+                    <span style={{ color: "#374151", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📎 {a.filename} <span style={{ color: "#9CA3AF", marginLeft: 6 }}>{(a.size/1024).toFixed(0)}KB</span></span>
+                    <button onClick={() => onRemoveAttachment(i)} style={{ background: "transparent", border: "none", color: "#DC2626", fontSize: "0.85em", fontWeight: 700, cursor: "pointer", padding: "0 4px" }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {error && (

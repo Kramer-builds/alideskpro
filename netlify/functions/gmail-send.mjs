@@ -23,7 +23,7 @@ export const handler = async (event) => {
 
   try {
     const body = parseBody(event);
-    const { to, subject, body: messageBody, cc, threadId, inReplyTo, companyId, contactId, fromEmail } = body;
+    const { to, subject, body: messageBody, cc, bcc, threadId, inReplyTo, companyId, contactId, fromEmail, attachments } = body;
 
     if (!to || !subject || !messageBody) {
       return json(400, { error: "Missing required fields: to, subject, body" });
@@ -53,20 +53,54 @@ export const handler = async (event) => {
     const senderEmail = tokenRow.email;
 
     // Build the raw RFC-2822 message.
-    const headers = [
+    // If we have attachments, we use multipart/mixed encoding. Otherwise simple text.
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+    const baseHeaders = [
       `From: ${senderEmail}`,
       `To: ${to}`,
     ];
-    if (cc) headers.push(`Cc: ${cc}`);
-    headers.push(`Subject: ${encodeRfc2047(subject)}`);
-    headers.push(`MIME-Version: 1.0`);
-    headers.push(`Content-Type: text/plain; charset="UTF-8"`);
-    headers.push(`Content-Transfer-Encoding: 7bit`);
+    if (cc) baseHeaders.push(`Cc: ${cc}`);
+    if (bcc) baseHeaders.push(`Bcc: ${bcc}`);
+    baseHeaders.push(`Subject: ${encodeRfc2047(subject)}`);
+    baseHeaders.push(`MIME-Version: 1.0`);
     if (inReplyTo) {
-      headers.push(`In-Reply-To: ${inReplyTo}`);
-      headers.push(`References: ${inReplyTo}`);
+      baseHeaders.push(`In-Reply-To: ${inReplyTo}`);
+      baseHeaders.push(`References: ${inReplyTo}`);
     }
-    const rawMessage = headers.join("\r\n") + "\r\n\r\n" + messageBody;
+
+    let rawMessage;
+    if (hasAttachments) {
+      // Multipart MIME — boundary separates body from each attachment.
+      const boundary = "ali4_boundary_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+      baseHeaders.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+      const parts = [];
+      // Body part
+      parts.push(`--${boundary}`);
+      parts.push(`Content-Type: text/plain; charset="UTF-8"`);
+      parts.push(`Content-Transfer-Encoding: 7bit`);
+      parts.push("");
+      parts.push(messageBody);
+      // Each attachment
+      for (const a of attachments) {
+        if (!a || !a.filename || !a.data) continue;
+        // a.data is expected to be base64-encoded by the client
+        parts.push(`--${boundary}`);
+        parts.push(`Content-Type: ${a.mimeType || "application/octet-stream"}; name="${a.filename}"`);
+        parts.push(`Content-Disposition: attachment; filename="${a.filename}"`);
+        parts.push(`Content-Transfer-Encoding: base64`);
+        parts.push("");
+        // Wrap base64 at 76 chars per RFC 2045
+        parts.push(a.data.match(/.{1,76}/g)?.join("\r\n") || a.data);
+      }
+      parts.push(`--${boundary}--`);
+      rawMessage = baseHeaders.join("\r\n") + "\r\n\r\n" + parts.join("\r\n");
+    } else {
+      // Simple text body
+      baseHeaders.push(`Content-Type: text/plain; charset="UTF-8"`);
+      baseHeaders.push(`Content-Transfer-Encoding: 7bit`);
+      rawMessage = baseHeaders.join("\r\n") + "\r\n\r\n" + messageBody;
+    }
+
     const encodedMessage = Buffer.from(rawMessage, "utf-8")
       .toString("base64")
       .replace(/\+/g, "-")
@@ -114,8 +148,15 @@ export const handler = async (event) => {
         body_html: null,
         received_at: new Date().toISOString(),
         is_read: true,
-        has_attachments: false,
-        attachment_meta: null,
+        has_attachments: hasAttachments,
+        attachment_meta: hasAttachments ? attachments.map(a => ({
+          filename: a.filename,
+          mimeType: a.mimeType || "application/octet-stream",
+          size: a.size || 0,
+          // Outbound attachments are stored locally (not retrievable from Gmail until next sync).
+          // We mark them so the UI knows they're outbound and not downloadable yet.
+          attachmentId: null,
+        })) : null,
         detected_order_refs: detectOrderRefs(subject + " " + messageBody),
         raw_headers: { from: senderEmail, to, subject },
       });
