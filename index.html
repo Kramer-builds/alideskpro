@@ -1038,8 +1038,13 @@ function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.waiting ? "#3B82F6" : "transparent" }} />
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+                    {t.last.channel === "whatsapp" && (
+                      <span style={{ background: "#E1F5EE", color: "#0F6E56", fontSize: "0.62em", fontWeight: 700, padding: "2px 7px", borderRadius: 99, letterSpacing: 0.4 }}>WHATSAPP</span>
+                    )}
                     <span style={{ color: "#111827", fontSize: "0.82em", fontWeight: t.waiting ? 700 : 600 }}>
-                      {t.last.direction === "outbound" ? `You → ${(t.last.to_emails||[])[0] || "?"}` : (t.last.from_name || t.last.from_email)}
+                      {t.last.direction === "outbound"
+                        ? `You → ${(t.last.to_emails||[])[0] || t.last.to_phone || "?"}`
+                        : (t.last.from_name || t.last.from_email || t.last.from_phone)}
                     </span>
                     <span style={{ color: "#6B7280", fontSize: "0.7em" }}>·</span>
                     <span style={{ color: "#2C3E6B", fontSize: "0.7em", fontWeight: 600 }}>{t.company?.name || "Unmatched"}</span>
@@ -1047,7 +1052,7 @@ function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
                       <span key={ref} style={{ background: "#FEE2E2", color: "#DC2626", fontSize: "0.6em", fontWeight: 700, padding: "2px 6px", borderRadius: 99, fontFamily: "monospace" }}>🔗 {ref}</span>
                     ))}
                   </div>
-                  <div style={{ color: "#111827", fontSize: "0.82em", fontWeight: 600, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.last.subject}</div>
+                  <div style={{ color: "#111827", fontSize: "0.82em", fontWeight: 600, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.last.subject || (t.last.channel === "whatsapp" ? "(WhatsApp message)" : "(no subject)")}</div>
                   <div style={{ fontSize: "0.7em", color: "#6B7280", lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {(t.last.body_text || "").slice(0, 120)}
                   </div>
@@ -1075,8 +1080,11 @@ function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
 // and send via the gmail-send Netlify Function.
 function ComposeModal({ companies, onClose, prefill }) {
   // prefill (optional) shape:
-  //   { mode: "forward" | "new", subject?, body?, to?, companyId?, contactId?, attachments? }
+  //   { mode: "forward" | "new" | "whatsapp", subject?, body?, to?, companyId?, contactId?, attachments? }
   // Used when launching from a Forward action — pre-fills subject with "Fwd: ...", body with quoted original.
+
+  // Channel: "email" | "whatsapp" — toggled at the top of the modal
+  const [channel, setChannel] = useState(prefill?.channel || "email");
 
   const [vendorPickerOpen, setVendorPickerOpen] = useState(false);
   const [vendorSearch, setVendorSearch] = useState("");
@@ -1087,12 +1095,67 @@ function ComposeModal({ companies, onClose, prefill }) {
   const [body, setBody] = useState(prefill?.body || "");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  // CC/BCC toggle — collapsed by default
+  // CC/BCC toggle — collapsed by default (email only)
   const [showCcBcc, setShowCcBcc] = useState(false);
   const [cc, setCc] = useState("");
   const [bcc, setBcc] = useState("");
   // Attachments (each: { filename, mimeType, size, data (base64) })
   const [attachments, setAttachments] = useState([]);
+
+  // WhatsApp-specific state
+  // mode: "template" required for cold-start (24h window not active)
+  //       "freeform" allowed when there's an active 24h conversation window
+  const [whatsappMode, setWhatsappMode] = useState("template");
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [templateVars, setTemplateVars] = useState({});
+  const [toPhone, setToPhone] = useState(prefill?.toPhone || "");
+
+  // Approved Twilio Content templates. All are zero-variable — the message text
+  // is fully composed at template-creation time. Picker UI just selects which to send.
+  const WHATSAPP_TEMPLATES = [
+    {
+      name: "vendor_intro",
+      label: "Intro & terms (start here for new vendors)",
+      contentSid: "HX3886d4f4c4ff7c85fe6b4b8caed19708",
+      vars: [],
+      preview: "Boutique fast fashion. 12-18 units/SKU. Standard requirements. Asks for vendor's contact info.",
+    },
+    {
+      name: "my_contact_terms",
+      label: "Our contact info & shipping address",
+      contentSid: "HXf98d00da4bdee6b9122cf1997a3de78a",
+      vars: [],
+      preview: "Email, WhatsApp, emergency text, ship-to address. Send after vendor responds to intro.",
+    },
+    {
+      name: "latest_po_request",
+      label: "Request latest PO from vendor",
+      contentSid: "HXafb8cb08e4d2e73c0e862153de33b118",
+      vars: [],
+      preview: "Asks vendor for their most updated PO (PDF or Excel).",
+    },
+    {
+      name: "payment_made",
+      label: "Payment made — request order update",
+      contentSid: "HXc894c08598e764598469e13a707e4602",
+      vars: [],
+      preview: "Confirms payment sent. Asks for prep/ship update.",
+    },
+    {
+      name: "tracking_request",
+      label: "Tracking number request",
+      contentSid: "HX92e2fe555cfd799e7b266fe9b2f07933",
+      vars: [],
+      preview: "Asks for tracking number and estimated arrival.",
+    },
+    {
+      name: "check_in",
+      label: "Check-in / progress request",
+      contentSid: "HXdfa48bdca6a1035a667f0269d9e60257",
+      vars: [],
+      preview: "Generic progress check-in. Use when no specific question — just touching base.",
+    },
+  ];
 
   // Close popovers on outside click
   useEffect(() => {
@@ -1111,14 +1174,26 @@ function ComposeModal({ companies, onClose, prefill }) {
     setContactId("");
     setVendorPickerOpen(false);
     setVendorSearch("");
-    const firstWithEmail = (c.contacts || []).find(ct => ct.email && ct.email.trim());
-    if (firstWithEmail) {
-      setTo(firstWithEmail.email);
-      setContactId(firstWithEmail.id);
-    } else if (c.email) {
-      setTo(c.email);
+    if (channel === "whatsapp") {
+      // Find first contact with a phone number
+      const firstWithPhone = (c.contacts || []).find(ct => ct.phone && ct.phone.trim());
+      if (firstWithPhone) {
+        setToPhone(firstWithPhone.phone);
+        setContactId(firstWithPhone.id);
+      } else {
+        setToPhone("");
+      }
     } else {
-      setTo("");
+      // Email channel
+      const firstWithEmail = (c.contacts || []).find(ct => ct.email && ct.email.trim());
+      if (firstWithEmail) {
+        setTo(firstWithEmail.email);
+        setContactId(firstWithEmail.id);
+      } else if (c.email) {
+        setTo(c.email);
+      } else {
+        setTo("");
+      }
     }
   };
 
@@ -1172,6 +1247,9 @@ function ComposeModal({ companies, onClose, prefill }) {
 
   const onSend = async () => {
     setError("");
+    if (channel === "whatsapp") {
+      return onSendWhatsApp();
+    }
     if (!to.trim()) { setError("Recipient email is required."); return; }
     if (!subject.trim()) { setError("Subject is required."); return; }
     if (!body.trim()) { setError("Message body cannot be empty."); return; }
@@ -1200,8 +1278,47 @@ function ComposeModal({ companies, onClose, prefill }) {
     setSending(false);
   };
 
+  const onSendWhatsApp = async () => {
+    if (!toPhone.trim()) { setError("Recipient phone number is required (e.g. +8613912345678)."); return; }
+    if (whatsappMode === "template" && !selectedTemplate) { setError("Please select a template."); return; }
+    if (whatsappMode === "freeform" && !body.trim()) { setError("Message body cannot be empty."); return; }
+    setSending(true);
+    try {
+      const payload = whatsappMode === "template"
+        ? {
+            to: toPhone.trim(),
+            mode: "template",
+            contentSid: selectedTemplate.contentSid,
+            templateName: selectedTemplate.name,
+            // No content variables — all current templates are zero-variable
+            companyId: companyId || null,
+            contactId: contactId || null,
+          }
+        : {
+            to: toPhone.trim(),
+            mode: "freeform",
+            body,
+            companyId: companyId || null,
+            contactId: contactId || null,
+          };
+      const r = await fetch("/.netlify/functions/whatsapp-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "WhatsApp send failed");
+      onClose();
+    } catch (e) {
+      setError(e.message);
+    }
+    setSending(false);
+  };
+
   const totalAttachmentSize = attachments.reduce((s, a) => s + (a.size || 0), 0);
-  const titleLabel = prefill?.mode === "forward" ? "Forward Email" : "New Email";
+  const titleLabel = channel === "whatsapp"
+    ? "New WhatsApp"
+    : prefill?.mode === "forward" ? "Forward Email" : "New Email";
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
@@ -1214,6 +1331,33 @@ function ComposeModal({ companies, onClose, prefill }) {
 
         {/* Body */}
         <div style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Channel toggle — pick Email or WhatsApp */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center", paddingBottom: 8, borderBottom: "1px solid #F1F5F9" }}>
+            <span style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginRight: 6 }}>Send via</span>
+            <button
+              onClick={() => setChannel("email")}
+              style={{
+                background: channel === "email" ? "#2C3E6B" : "white",
+                color: channel === "email" ? "white" : "#374151",
+                border: "1px solid " + (channel === "email" ? "#2C3E6B" : "#E2E8F0"),
+                borderRadius: 99,
+                padding: "5px 14px", fontSize: "0.78em", fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >Email</button>
+            <button
+              onClick={() => setChannel("whatsapp")}
+              style={{
+                background: channel === "whatsapp" ? "#1D9E75" : "white",
+                color: channel === "whatsapp" ? "white" : "#374151",
+                border: "1px solid " + (channel === "whatsapp" ? "#1D9E75" : "#E2E8F0"),
+                borderRadius: 99,
+                padding: "5px 14px", fontSize: "0.78em", fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >WhatsApp</button>
+          </div>
+
           {/* Vendor picker */}
           <div>
             <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Vendor (optional)</div>
@@ -1240,7 +1384,7 @@ function ComposeModal({ companies, onClose, prefill }) {
           </div>
 
           {/* Contact picker — only shown when vendor has multiple contacts with email */}
-          {contacts.length > 1 && (
+          {channel === "email" && contacts.length > 1 && (
             <div>
               <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Contact</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1253,6 +1397,8 @@ function ComposeModal({ companies, onClose, prefill }) {
             </div>
           )}
 
+          {/* === EMAIL-SPECIFIC FIELDS === */}
+          {channel === "email" && <>
           {/* To */}
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
@@ -1312,6 +1458,69 @@ function ComposeModal({ companies, onClose, prefill }) {
               </div>
             )}
           </div>
+          </>}
+
+          {/* === WHATSAPP-SPECIFIC FIELDS === */}
+          {channel === "whatsapp" && <>
+          {/* To phone */}
+          <div>
+            <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Phone (with country code, +)</div>
+            <input type="tel" value={toPhone} onChange={e=>setToPhone(e.target.value)} placeholder="+8613912345678" style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", color: "#111827", boxSizing: "border-box" }} />
+            <div style={{ fontSize: "0.7em", color: "#9CA3AF", marginTop: 4 }}>Format: include + and country code (e.g. +86 for China, +1 for US)</div>
+          </div>
+
+          {/* Mode toggle: template vs freeform */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginRight: 6 }}>Mode</span>
+            <button
+              onClick={() => setWhatsappMode("template")}
+              style={{ background: whatsappMode === "template" ? "#1D9E75" : "white", color: whatsappMode === "template" ? "white" : "#374151", border: "1px solid " + (whatsappMode === "template" ? "#1D9E75" : "#E2E8F0"), borderRadius: 99, padding: "4px 12px", fontSize: "0.74em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+            >Template (cold start)</button>
+            <button
+              onClick={() => setWhatsappMode("freeform")}
+              style={{ background: whatsappMode === "freeform" ? "#1D9E75" : "white", color: whatsappMode === "freeform" ? "white" : "#374151", border: "1px solid " + (whatsappMode === "freeform" ? "#1D9E75" : "#E2E8F0"), borderRadius: 99, padding: "4px 12px", fontSize: "0.74em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+            >Free-form (in 24h window)</button>
+          </div>
+
+          {/* Template picker (when mode = template) */}
+          {whatsappMode === "template" && (
+            <div>
+              <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Template</div>
+              <select
+                value={selectedTemplate?.name || ""}
+                onChange={e => {
+                  const t = WHATSAPP_TEMPLATES.find(x => x.name === e.target.value);
+                  setSelectedTemplate(t || null);
+                  setTemplateVars({});
+                }}
+                style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", color: "#111827", boxSizing: "border-box", background: "white" }}
+              >
+                <option value="">— Select a template —</option>
+                {WHATSAPP_TEMPLATES.map(t => (
+                  <option key={t.name} value={t.name}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Template preview (when template selected) — since templates are zero-variable,
+              we show a summary so the user knows what's about to be sent. */}
+          {whatsappMode === "template" && selectedTemplate && (
+            <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#166534", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>What this sends</div>
+              <div style={{ fontSize: "0.78em", color: "#1F2937", lineHeight: 1.5 }}>{selectedTemplate.preview}</div>
+            </div>
+          )}
+
+          {/* Free-form body (when mode = freeform) */}
+          {whatsappMode === "freeform" && (
+            <div>
+              <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Message</div>
+              <textarea value={body} onChange={e=>setBody(e.target.value)} placeholder="Type your message..." style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", minHeight: 140, color: "#111827", boxSizing: "border-box", resize: "vertical" }} />
+              <div style={{ fontSize: "0.7em", color: "#9CA3AF", marginTop: 4 }}>Free-form requires the vendor to have messaged you in the last 24 hours.</div>
+            </div>
+          )}
+          </>}
 
           {error && (
             <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 8, padding: "8px 12px", fontSize: "0.78em", color: "#991B1B" }}>
@@ -1322,7 +1531,31 @@ function ComposeModal({ companies, onClose, prefill }) {
           {/* Actions */}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
             <button onClick={onClose} disabled={sending} style={{ background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 16px", fontSize: "0.82em", fontWeight: 600, cursor: sending ? "not-allowed" : "pointer", fontFamily: "inherit" }}>Cancel</button>
-            <button onClick={onSend} disabled={sending || !to.trim() || !subject.trim() || !body.trim()} style={{ background: sending || !to.trim() || !subject.trim() || !body.trim() ? "#9CA3AF" : "#2C3E6B", color: "white", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: "0.85em", fontWeight: 700, cursor: sending || !to.trim() || !subject.trim() || !body.trim() ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{sending ? "Sending..." : "Send →"}</button>
+            {(() => {
+              // Channel-aware validation. We compute disabled once and reuse for styling.
+              const emailInvalid = !to.trim() || !subject.trim() || !body.trim();
+              const whatsappInvalid = !toPhone.trim() ||
+                (whatsappMode === "template" && !selectedTemplate) ||
+                (whatsappMode === "freeform" && !body.trim());
+              const disabled = sending || (channel === "email" ? emailInvalid : whatsappInvalid);
+              return (
+                <button
+                  onClick={onSend}
+                  disabled={disabled}
+                  style={{
+                    background: disabled ? "#9CA3AF" : (channel === "whatsapp" ? "#1D9E75" : "#2C3E6B"),
+                    color: "white",
+                    border: "none",
+                    borderRadius: 8,
+                    padding: "8px 18px",
+                    fontSize: "0.85em",
+                    fontWeight: 700,
+                    cursor: disabled ? "not-allowed" : "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >{sending ? "Sending..." : "Send →"}</button>
+              );
+            })()}
           </div>
         </div>
       </div>

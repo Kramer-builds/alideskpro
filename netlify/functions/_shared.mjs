@@ -18,6 +18,24 @@ export function getEnv() {
   };
 }
 
+// Twilio env vars are only required for the WhatsApp Functions, so we keep
+// them in a separate getter that doesn't break Gmail Functions if Twilio is
+// not yet configured.
+export function getTwilioEnv() {
+  const req = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"];
+  const missing = req.filter(k => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error("Missing required Twilio env vars: " + missing.join(", "));
+  }
+  return {
+    TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
+    // The HESCO sender phone number registered with Twilio.
+    // Hardcoded since it's not sensitive — vendors will see it.
+    TWILIO_WHATSAPP_FROM: "whatsapp:+19293994010",
+  };
+}
+
 // Build the OAuth redirect URI for the current request.
 // We support three deploy contexts: local dev (localhost:8888), the random
 // netlify subdomain, and the production custom domain alideskpro.com.
