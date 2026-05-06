@@ -41,7 +41,7 @@ export const handler = async (event) => {
     } else {
       const rows = await sbGet(
         "ali4_gmail_tokens",
-        `?email=not.like.__pending_*&email=not.like.__used_*&select=*&limit=1`,
+        `?email=not.like.__pending_*&email=not.like.__used_*&email=not.like.__disconnected_*&select=*&limit=1`,
       );
       tokenRow = rows[0];
     }

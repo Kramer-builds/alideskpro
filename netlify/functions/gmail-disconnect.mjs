@@ -20,7 +20,7 @@ export const handler = async (event) => {
     if (!target) {
       const rows = await sbGet(
         "ali4_gmail_tokens",
-        `?email=not.like.__pending_*&email=not.like.__used_*&select=email&limit=1`,
+        `?email=not.like.__pending_*&email=not.like.__used_*&email=not.like.__disconnected_*&select=email&limit=1`,
       );
       if (!rows || rows.length === 0) {
         return json(404, { error: "No connected account to disconnect." });

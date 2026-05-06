@@ -11,10 +11,10 @@ export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return json(200, {});
 
   try {
-    // Find the first non-pending token row.
+    // Find the first active (not pending, not used, not disconnected) token row.
     const rows = await sbGet(
       "ali4_gmail_tokens",
-      `?email=not.like.__pending_*&email=not.like.__used_*&select=email,last_synced_at&limit=1`,
+      `?email=not.like.__pending_*&email=not.like.__used_*&email=not.like.__disconnected_*&select=email,last_synced_at&limit=1`,
     );
     if (!rows || rows.length === 0) {
       return json(200, { connected: false });
