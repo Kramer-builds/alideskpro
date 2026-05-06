@@ -75,7 +75,8 @@ export const handler = async (event) => {
     const messageRefs = listData.messages || [];
 
     // Load companies/contacts from ali4_store for vendor matching.
-    const companiesBlob = await loadStoreKey("companies");
+    // Frontend stores companies under the key 'ali4_companies' in ali4_store.
+    const companiesBlob = await loadStoreKey("ali4_companies");
     const companies = Array.isArray(companiesBlob) ? companiesBlob : [];
 
     // Load the ignored-senders list. Messages from these addresses get auto-archived on sync

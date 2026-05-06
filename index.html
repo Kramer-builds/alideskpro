@@ -438,7 +438,7 @@ function Dashboard({ companies, budgets, onGo }) {
 }
 
 // Tasks View
-function InboxView({ companies, onCreateVendorFromEmail }) {
+function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
   // Connection state (loaded from /gmail-status)
   const [status, setStatus] = useState({ loading: true });
   // Messages list (loaded from ali4_messages)
@@ -767,8 +767,9 @@ function InboxView({ companies, onCreateVendorFromEmail }) {
       setReassignThread(null);
       setReassignPickerOpen(false);
       setReassignSearch("");
-      // Also surface a confirmation. Note: refreshing companies blob is a bigger change handled by parent.
-      alert(`Assigned to ${company.name}.${data.contactAdded ? " Contact added." : ""} Reload page to see the new contact in vendor list.`);
+      // Tell the parent App to re-fetch its companies state so the new contact shows up
+      // in vendor lists and pickers without requiring a page refresh.
+      if (onCompaniesChanged) onCompaniesChanged();
     } catch (e) {
       alert("Assign failed: " + e.message);
     }
@@ -3975,6 +3976,17 @@ function App() {
 
   const updateCompany=(updated)=>setCompanies(cs=>cs.map(c=>c.id===updated.id?updated:c));
   const addCompany=(c)=>setCompanies(cs=>[c,...cs]);
+  // Re-fetch companies blob from Supabase. Used after server-side mutations (assigning
+  // an unmatched email's sender as a contact on a vendor) so the in-memory state reflects
+  // the change without requiring a page refresh.
+  const reloadCompanies = async () => {
+    try {
+      const fresh = await load("ali4_companies", []);
+      if (Array.isArray(fresh)) setCompanies(fresh);
+    } catch (e) {
+      console.warn("reloadCompanies failed:", e.message);
+    }
+  };
 
   const overdueCt=companies.flatMap(c=>(c.followUps||[]).filter(t=>!t.done&&isOverdue(t.dueDate))).length;
   const waitingOnMe=companies.filter(c=>(c.conversations||[]).some(cv=>cv.waitingOn==="They're waiting on me")).length;
@@ -4036,7 +4048,7 @@ function App() {
       {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
       {nav==="pricing"&&<PricingTool />}
       {nav==="tasks"&&<TasksView companies={companies} onUpdateCompany={updateCompany} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
-      {nav==="inbox"&&<InboxView companies={companies} onCreateVendorFromEmail={(fromEmail, fromName) => { setPendingVendorAssignment({ fromEmail, fromName }); setAddCompanyModal(true); }} />}
+      {nav==="inbox"&&<InboxView companies={companies} onCreateVendorFromEmail={(fromEmail, fromName) => { setPendingVendorAssignment({ fromEmail, fromName }); setAddCompanyModal(true); }} onCompaniesChanged={reloadCompanies} />}
       {nav==="contacts"&&<ContactsCRM companies={companies} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
       {nav==="budget"&&<Budget budgets={budgets} onUpdate={b=>setBudgets(bs=>bs.map(x=>x.id===b.id?b:x))} onAdd={b=>setBudgets(bs=>[...bs,b])} onDelete={id=>setBudgets(bs=>bs.filter(b=>b.id!==id))} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
       {nav==="research"&&<ResearchBoard items={researchItems} setItems={setResearchItems} companies={companies} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
@@ -4130,7 +4142,7 @@ function App() {
           {nav==="tracking"&&<TrackingPage companies={companies} onGo={goTo} />}
           {nav==="pricing"&&<PricingTool />}
           {nav==="tasks"&&<TasksView companies={companies} onUpdateCompany={updateCompany} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
-          {nav==="inbox"&&<InboxView companies={companies} onCreateVendorFromEmail={(fromEmail, fromName) => { setPendingVendorAssignment({ fromEmail, fromName }); setAddCompanyModal(true); }} />}
+          {nav==="inbox"&&<InboxView companies={companies} onCreateVendorFromEmail={(fromEmail, fromName) => { setPendingVendorAssignment({ fromEmail, fromName }); setAddCompanyModal(true); }} onCompaniesChanged={reloadCompanies} />}
           {nav==="contacts"&&<ContactsCRM companies={companies} onGoToCompany={id=>{setNav("companies");setSelectedCompany(id);}} />}
           {nav==="budget"&&<Budget budgets={budgets} onUpdate={b=>setBudgets(bs=>bs.map(x=>x.id===b.id?b:x))} onAdd={b=>setBudgets(bs=>[...bs,b])} onDelete={id=>setBudgets(bs=>bs.filter(b=>b.id!==id))} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}
           {nav==="research"&&<ResearchBoard items={researchItems} setItems={setResearchItems} companies={companies} allCategories={categories} onAddCategory={c=>setCategories(cs=>[...cs,c])} />}

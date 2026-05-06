@@ -52,7 +52,9 @@ async function assignVendor({ fromEmail, fromName, companyId, contactId }) {
 
   // Step 2: Add this email to the company's contacts (so future mail auto-matches).
   // The companies live as a JSON blob in ali4_store under key='companies'.
-  const rows = await sbGet("ali4_store", "?key=eq.companies&select=value");
+  // The frontend stores companies under the key 'ali4_companies' in ali4_store.
+  // We must read from and write to the same key so the frontend sees our changes.
+  const rows = await sbGet("ali4_store", "?key=eq.ali4_companies&select=value");
   if (!rows || rows.length === 0) {
     return json(200, { ok: true, note: "messages reassigned but companies blob not found" });
   }
@@ -78,7 +80,7 @@ async function assignVendor({ fromEmail, fromName, companyId, contactId }) {
       phone: "",
     });
     // Save the updated companies blob.
-    await sbUpsert("ali4_store", { key: "companies", value: JSON.stringify(companies) }, "key");
+    await sbUpsert("ali4_store", { key: "ali4_companies", value: JSON.stringify(companies) }, "key");
   }
 
   return json(200, { ok: true, contactAdded: !existingContact });
