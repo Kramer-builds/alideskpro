@@ -680,8 +680,25 @@ function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
   });
   const threads = (() => {
     const byThread = new Map();
+    // Compute a stable thread key for a message. Email messages use Gmail's threading.
+    // WhatsApp doesn't have a native thread concept, so we synthesize one from the phone
+    // pair: all messages with the same other-party phone become one thread, regardless
+    // of who sent which one.
+    const threadKeyOf = (m) => {
+      if (m.channel === "whatsapp") {
+        // Pick the OTHER party's phone (not our HESCO number).
+        // For inbound: from_phone is the vendor.
+        // For outbound: to_phone is the vendor.
+        const otherParty = m.direction === "inbound" ? m.from_phone : m.to_phone;
+        // Normalize the phone (strip spaces, dashes, etc.) so different formats group together.
+        const normalized = (otherParty || "").replace(/[^\d+]/g, "");
+        return "whatsapp:" + normalized;
+      }
+      return m.thread_id || m.gmail_message_id;
+    };
     for (const m of filtered) {
-      const key = m.thread_id || m.gmail_message_id;
+      const key = threadKeyOf(m);
+      if (!key) continue;
       if (!byThread.has(key)) byThread.set(key, []);
       byThread.get(key).push(m);
     }
@@ -690,7 +707,7 @@ function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
       const last = sorted[sorted.length - 1];
       const company = companies.find(c => c.id === last.company_id);
       return {
-        threadId: sorted[0].thread_id || sorted[0].gmail_message_id,
+        threadId: threadKeyOf(sorted[0]),
         messages: sorted,
         last,
         company,
