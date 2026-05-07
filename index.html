@@ -600,23 +600,58 @@ function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
     setSending(true);
     try {
       const last = selectedThread.messages[selectedThread.messages.length - 1];
-      const replyTo = last.direction === "inbound" ? last.from_email : (last.to_emails || [])[0];
-      const subject = last.subject.startsWith("Re:") ? last.subject : `Re: ${last.subject}`;
-      const r = await fetch("/.netlify/functions/gmail-send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to: replyTo,
-          subject,
-          body: replyText,
-          threadId: selectedThread.threadId,
-          inReplyTo: last.gmail_message_id,
-          companyId: last.company_id,
-          contactId: last.contact_id,
-        }),
-      });
+      const isWhatsApp = last.channel === "whatsapp";
+
+      let r;
+      if (isWhatsApp) {
+        // WhatsApp reply: use the inbound sender's phone (or for outbound-only threads, the to_phone)
+        const replyToPhone = last.direction === "inbound"
+          ? last.from_phone
+          : last.to_phone;
+        if (!replyToPhone) {
+          throw new Error("No phone number found for this WhatsApp thread.");
+        }
+        // WhatsApp replies inside a thread are free-form (assumes the 24h window is open).
+        // If the window has closed, Twilio will return a specific error and we surface it.
+        r = await fetch("/.netlify/functions/whatsapp-send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: replyToPhone,
+            mode: "freeform",
+            body: replyText,
+            companyId: last.company_id,
+            contactId: last.contact_id,
+          }),
+        });
+      } else {
+        // Email reply
+        const replyTo = last.direction === "inbound" ? last.from_email : (last.to_emails || [])[0];
+        const baseSubject = last.subject || "(no subject)";
+        const subject = baseSubject.startsWith("Re:") ? baseSubject : `Re: ${baseSubject}`;
+        r = await fetch("/.netlify/functions/gmail-send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: replyTo,
+            subject,
+            body: replyText,
+            threadId: selectedThread.threadId,
+            inReplyTo: last.gmail_message_id,
+            companyId: last.company_id,
+            contactId: last.contact_id,
+          }),
+        });
+      }
+
       const data = await r.json();
-      if (!r.ok) throw new Error(data.error || "Send failed");
+      if (!r.ok) {
+        // Special case: WhatsApp 24h window expired
+        if (isWhatsApp && data.twilioCode === 63016) {
+          throw new Error("WhatsApp's 24-hour reply window has expired. Use a template instead — click + Compose → WhatsApp → Template mode.");
+        }
+        throw new Error(data.error || "Send failed");
+      }
       setReplyText("");
       await loadMessages();
       // Re-find the thread we were viewing.
@@ -969,19 +1004,42 @@ function InboxView({ companies, onCreateVendorFromEmail, onCompaniesChanged }) {
         </div>
 
         {/* Reply composer */}
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "14px 16px" }}>
-          <div style={{ fontSize: "0.65em", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Reply</div>
-          <textarea
-            value={replyText}
-            onChange={e => setReplyText(e.target.value)}
-            placeholder="Type your reply..."
-            style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", minHeight: 100, color: "#111827", boxSizing: "border-box", resize: "vertical" }}
-          />
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10, gap: 6 }}>
-            <button onClick={() => setReplyText("")} disabled={sending || !replyText} style={{ background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 6, padding: "7px 14px", fontSize: "0.78em", fontWeight: 600, cursor: replyText ? "pointer" : "not-allowed", fontFamily: "inherit" }}>Clear</button>
-            <button onClick={onSendReply} disabled={sending || !replyText.trim()} style={{ background: sending || !replyText.trim() ? "#9CA3AF" : "#2C3E6B", color: "white", border: "none", borderRadius: 6, padding: "7px 18px", fontSize: "0.82em", fontWeight: 700, cursor: sending || !replyText.trim() ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{sending ? "Sending..." : "Send →"}</button>
-          </div>
-        </div>
+        {(() => {
+          const lastMsg = selectedThread.messages[selectedThread.messages.length - 1];
+          const replyChannel = lastMsg.channel === "whatsapp" ? "whatsapp" : "email";
+          const isWhatsApp = replyChannel === "whatsapp";
+          const sendBg = isWhatsApp ? "#1D9E75" : "#2C3E6B";
+          const labelText = isWhatsApp ? "Reply via WhatsApp" : "Reply via email";
+          return (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: isWhatsApp ? "#E1F5EE" : "#E0E7FF", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {isWhatsApp ? (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#0F6E56" strokeWidth="2.5"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                    ) : (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#1E3A8A" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6"/></svg>
+                    )}
+                  </div>
+                  <div style={{ fontSize: "0.7em", fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: 0.5 }}>{labelText}</div>
+                </div>
+                {isWhatsApp && (
+                  <div style={{ fontSize: "0.66em", color: "#9CA3AF" }}>Free-form (24h window)</div>
+                )}
+              </div>
+              <textarea
+                value={replyText}
+                onChange={e => setReplyText(e.target.value)}
+                placeholder={isWhatsApp ? "Type your WhatsApp reply..." : "Type your reply..."}
+                style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: "0.85em", fontFamily: "inherit", outline: "none", minHeight: 100, color: "#111827", boxSizing: "border-box", resize: "vertical" }}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10, gap: 6 }}>
+                <button onClick={() => setReplyText("")} disabled={sending || !replyText} style={{ background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 6, padding: "7px 14px", fontSize: "0.78em", fontWeight: 600, cursor: replyText ? "pointer" : "not-allowed", fontFamily: "inherit" }}>Clear</button>
+                <button onClick={onSendReply} disabled={sending || !replyText.trim()} style={{ background: sending || !replyText.trim() ? "#9CA3AF" : sendBg, color: "white", border: "none", borderRadius: 6, padding: "7px 18px", fontSize: "0.82em", fontWeight: 700, cursor: sending || !replyText.trim() ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{sending ? "Sending..." : "Send →"}</button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     );
   }
